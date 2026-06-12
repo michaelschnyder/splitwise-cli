@@ -2,7 +2,7 @@
 name: splitwise-expenses
 description: Query and inspect Splitwise expenses with filters, pagination, and formats.
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
   author: splitwise-cli
   tags: splitwise,expenses,filters,pagination
   alwaysApply: "false"

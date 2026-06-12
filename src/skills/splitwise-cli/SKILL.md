@@ -2,7 +2,7 @@
 name: splitwise-cli
 description: Splitwise CLI command reference for auth, friends, groups, and expenses.
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
   author: splitwise-cli
   tags: splitwise,cli,expenses,groups,friends,auth
   alwaysApply: "false"

@@ -2,7 +2,7 @@
 name: splitwise-auth
 description: Authenticate splitwise-cli and troubleshoot access issues.
 metadata:
-  version: "1.0.0"
+  version: "1.0.1"
   author: splitwise-cli
   tags: splitwise,auth,oauth,token
   alwaysApply: "false"
