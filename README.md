@@ -1,276 +1,238 @@
-# :money_with_wings: Give Your Agent a Receipt Book: Introducing splitwise-cli
+# splitwise-cli
 
-A practical command-line companion for Splitwise that is optimized for both humans and coding agents.
+A terminal-first CLI for Splitwise with readable tables, structured JSON/YAML output, and built-in skill files for coding assistants.
 
-Track expenses, filter by people and groups, and export structured results fast enough for scripts, dashboards, and AI workflows.
+## Links
 
-## Why This Exists
-
-Splitwise already has great APIs. This CLI makes them pleasant to use in terminal-first workflows:
-
-- Fast commands for daily finance operations
-- Consistent table, JSON, and YAML output
-- Name-based filters that resolve to API IDs automatically
-- Agent-ready skills that can be installed into coding assistants
-
-This project uses the `splitwise` Node.js library for Splitwise API integration.
-
-## Quick Start
-
-~~~bash
-# install globally from npm
-npm install -g splitwise-cli
-
-# or run directly with npx
-npx splitwise-cli auth whoami
-
-# authenticate
-splitwise-cli auth set-token YOUR_TOKEN
-
-# run common commands
-splitwise-cli auth whoami
-splitwise-cli groups list
-splitwise-cli expenses list --from -30d --all
-~~~
+- npm package: [splitwise-cli on npm](https://www.npmjs.com/package/splitwise-cli)
+- Code repository: [michaelschnyder/splitwise-cli](https://github.com/michaelschnyder/splitwise-cli)
+- Splitwise library: [keriwarr/splitwise](https://github.com/keriwarr/splitwise)
+- Splitwise API docs: [dev.splitwise.com](https://dev.splitwise.com/)
 
 ## Installation
 
-### npm (Global Install)
-
-~~~bash
+```bash
 npm install -g splitwise-cli
-~~~
-
-### npx (No Global Install)
-
-~~~bash
+# or
 npx splitwise-cli --help
-npx splitwise-cli auth whoami
-~~~
+```
 
-### Local Development (Clone)
+## Quick Start
 
-~~~bash
-git clone <repo>
-cd splitwise-cli
-npm install
-npm run dev -- expenses list --from -7d
-~~~
-
-### Local Build + Local Global Install
-
-~~~bash
-npm run build
-npm install -g .
-~~~
-
-### Verify
-
-~~~bash
-splitwise-cli --version
-splitwise-cli auth whoami
-~~~
-
-## Authentication
-
-Get credentials from https://www.splitwise.com/apps/register.
-
-~~~bash
-# token mode
+```bash
+# choose one auth mode
 splitwise-cli auth set-token YOUR_TOKEN
+# splitwise-cli auth set-oauth YOUR_KEY YOUR_SECRET
 
-# oauth client credentials mode
-splitwise-cli auth set-oauth YOUR_KEY YOUR_SECRET
-
-# verify active identity
+# verify auth
 splitwise-cli auth whoami
-splitwise-cli auth whoami -o json
-~~~
 
-Credentials are written to ~/.splitwise-cli/config.json.
+# common commands
+splitwise-cli friends list
+splitwise-cli groups list
+splitwise-cli expenses list --from -30d --all
+```
+
+Credentials are stored at `~/.splitwise-cli/config.json`.
+
+## Supported Areas
+
+| Area | Summary | Commands | Jump |
+|---|---|---|---|
+| Auth | Configure credentials and inspect active user | `set-token`, `set-oauth`, `whoami` | [Auth](#auth) |
+| Friends | List friends and balances | `list` | [Friends](#friends) |
+| Expenses | Query expenses with date/person/group filters | `list`, `get` | [Expenses](#expenses) |
+| Skills | List/install/create assistant skill files | `list`, `path`, `install`, `create` | [Skills](#skills) |
 
 ## Output Formats
 
-Use -o or --output on commands that return structured data.
+Use `-o` / `--output` when available.
 
-| Format | Purpose |
+| Format | Use case |
 |---|---|
-| table | Human-readable terminal view (default) |
-| json | Script-friendly structured output |
-| yaml | Readable structured output with comments-friendly style |
+| `table` | default terminal view |
+| `json` | scripts, pipes, automation |
+| `yaml` | readable structured output |
 
-~~~bash
+```bash
 splitwise-cli friends list -o yaml
-splitwise-cli expenses list -o json
-~~~
+splitwise-cli expenses list --from -7d -o json
+```
 
-## Command Overview
+## Auth
 
-| Domain | Commands |
-|---|---|
-| auth | set-token, set-oauth, whoami |
-| friends | list |
-| groups | list, get |
-| expenses | list, get |
-| skills | list, install, path, create |
+Create credentials at [splitwise.com/apps/register](https://www.splitwise.com/apps/register).
 
-## Expenses Deep Dive
+### Commands
 
-### List
+```bash
+splitwise-cli auth set-token YOUR_TOKEN
+splitwise-cli auth set-oauth YOUR_KEY YOUR_SECRET
+splitwise-cli auth whoami
+splitwise-cli auth whoami -o json
+```
 
-~~~bash
+### Example Response (`auth whoami -o json`)
+
+```json
+{
+  "id": 12345678,
+  "name": "Alex Example",
+  "email": "alex@example.com"
+}
+```
+
+## Friends
+
+### Commands
+
+```bash
+splitwise-cli friends list
+splitwise-cli friends list -o json
+```
+
+### Example Response (`friends list`)
+
+```text
+id        name            balance
+--------  --------------  -----------------
+11111111  Alice Example   -12.40 USD
+22222222  Bob Example     settled up
+```
+
+### Example Response (`friends list -o json`)
+
+```json
+[
+  {
+    "id": 11111111,
+    "name": "Alice Example",
+    "balance": "-12.40 USD"
+  },
+  {
+    "id": 22222222,
+    "name": "Bob Example",
+    "balance": "settled up"
+  }
+]
+```
+
+## Expenses
+
+### Commands
+
+```bash
 splitwise-cli expenses list [options]
-~~~
+splitwise-cli expenses get <expenseId>
+```
 
-### Options
+### Core Options (`expenses list`)
 
 | Flag | Short | Description |
 |---|---|---|
-| --group <id|name> | -g | Filter by group ID or partial group name |
-| --friend <id|name> | -u | Filter by friend ID or partial friend name |
-| --from <date> | -f | Include expenses on or after date |
-| --to <date> |  | Include expenses on or before date |
-| --max <n> | -m | Max number of returned records when not using --all |
-| --all |  | Walk all pages |
-| --mine |  | Equivalent to --payer @me |
-| --involved <@me|id|name> |  | Client-side participant filter |
-| --payer <@me|id|name> |  | Client-side payer filter |
-| --query <string> |  | Shorthand key:value tokens |
-| --output <format> | -o | table, json, yaml |
+| `--group <id|name>` | `-g` | filter by group ID or partial group name |
+| `--friend <id|name>` | `-u` | filter by friend ID or partial friend name |
+| `--from <date>` | `-f` | include expenses on or after date |
+| `--to <date>` |  | include expenses on or before date |
+| `--max <n>` | `-m` | max rows unless `--all` is used |
+| `--all` |  | walk all API pages |
+| `--mine` |  | shorthand for `--payer @me` |
+| `--involved <@me|id|name>` |  | client-side participant filter |
+| `--payer <@me|id|name>` |  | client-side payer filter |
+| `--query <string>` |  | shorthand key:value query |
+| `--output <format>` | `-o` | `table`, `json`, or `yaml` |
 
-### Date Formats
+Date values support ISO (`2026-01-01`) and relative values (`-10d`, `-2w`, `-1month`, `-1y`).
 
-Both --from and --to support:
+### Example Commands
 
-- ISO date: 2026-01-01
-- Relative values: -10d, -2w, -1month, -1y
-
-~~~bash
-splitwise-cli expenses list --from -30d
-splitwise-cli expenses list --from 2026-01-01 --to 2026-12-31
-~~~
-
-### Query Shorthand
-
-The --query flag supports key:value tokens:
-
-- group:
-- friend:
-- from:
-- to:
-
-Explicit flags win over matching query tokens.
-
-~~~bash
-splitwise-cli expenses list --query "friend:Alice group:Flatmates from:-30d"
-splitwise-cli expenses list --query "group:flat from:-7d" --group "Other Group"
-~~~
-
-### Server-Side vs Client-Side Filters
-
-| Filter | Execution |
-|---|---|
-| --group | Server-side after local name resolution |
-| --friend | Server-side after local name resolution |
-| --from / --to | Server-side |
-| --involved | Client-side |
-| --payer / --mine | Client-side |
-
-### Get One Expense
-
-~~~bash
-splitwise-cli expenses get 12345
-splitwise-cli expenses get 12345 -o yaml
-~~~
-
-## Practical Examples
-
-~~~bash
-# all expenses in last 30 days as JSON
+```bash
 splitwise-cli expenses list --from -30d --all -o json
-
-# expenses where current user paid in a group
 splitwise-cli expenses list --group Flatmates --mine --from -1month
+splitwise-cli expenses list --involved Alice --from -14d
+splitwise-cli expenses get 99999 -o yaml
+```
 
-# expenses where a specific user is involved
-splitwise-cli expenses list --involved Alice --from -14d -o table
+### Example Response (`expenses list`)
 
-# inspect one expense with split details and comments
-splitwise-cli expenses get 99999 -o json
-~~~
+```text
+date        group      paidBy        description            cost        category
+----------  ---------  ------------  ---------------------  ----------  --------
+6/10/2026   Flatmates  Alex Example  Groceries              48.90 USD   Food
+6/09/2026   Flatmates  Alex Example  Rent transfer -> Jo    650.00 USD  Payment
+```
 
-## Agent Skills
+### Example Response (`expenses list -o json`)
 
-Splitwise CLI ships embedded skills as packaged resources: they are stored in source, copied into the build output, and installed by command.
+```json
+[
+  {
+    "id": 99999,
+    "date": "2026-06-10T10:25:00Z",
+    "description": "Groceries",
+    "cost": "48.90",
+    "currency": "USD",
+    "category": "Food",
+    "isPayment": false,
+    "paidBy": "Alex Example",
+    "group": "Flatmates",
+    "splits": [
+      { "userId": 12345678, "name": "Alex Example", "paid": "48.90", "owes": "24.45" },
+      { "userId": 87654321, "name": "Jo Example", "paid": "0.00", "owes": "24.45" }
+    ],
+    "createdAt": "2026-06-10T10:25:10Z",
+    "createdByName": "Alex Example",
+    "updatedByName": "Alex Example",
+    "deletedByName": ""
+  }
+]
+```
 
-### Built-In Skills
+## Skills
 
-- splitwise-cli
-- splitwise-auth
-- splitwise-expenses
-- splitwise-groups
-- splitwise-friends
+Built-in skills are copied into the package and can be installed for supported assistants.
 
-### Resource Layout
+### Built-in Skill Names
 
-- source resources: src/skills/<skill>/SKILL.md
-- packaged resources: dist/skills/<skill>/SKILL.md
+- `splitwise-cli`
+- `splitwise-auth`
+- `splitwise-expenses`
+- `splitwise-groups`
+- `splitwise-friends`
 
-### List Skills
+### Commands
 
-~~~bash
+```bash
 splitwise-cli skills list
-splitwise-cli skills list -o json
-~~~
-
-### Install Skills
-
-~~~bash
-# auto-detect platform
-splitwise-cli skills install
-
-# explicit platform
-splitwise-cli skills install claude
-
-# project-local install
-splitwise-cli skills install codex --project
-
-# install one skill only
-splitwise-cli skills install cursor --name splitwise-expenses
-
-# install to all supported platforms
-splitwise-cli skills install all
-~~~
-
-Supported platform values:
-
-- claude or claude-code
-- cursor
-- codex
-- opencode
-- windsurf
-- gemini or gemini-code
-- pi
-- all
-
-### Show Install Paths
-
-~~~bash
-splitwise-cli skills path claude
-splitwise-cli skills path all --project
-~~~
-
-### Create Skill Files Manually
-
-~~~bash
+splitwise-cli skills path [platform]
+splitwise-cli skills install [platform]
 splitwise-cli skills create
-splitwise-cli skills create --name splitwise-expenses
-splitwise-cli skills create --dir ./generated-skills --force
-~~~
+```
 
-## Development Notes
+Supported platform values: `claude`, `cursor`, `codex`, `opencode`, `windsurf`, `gemini`, `pi`, `all`.
 
-~~~bash
-npm run build      # compiles TS and copies skills to dist/skills
-npm run dev -- groups list
-~~~
+### Example Response (`skills list -o yaml`)
+
+```yaml
+- name: splitwise-cli
+  type: skill
+  description: Top-level splitwise-cli command reference and workflow.
+- name: splitwise-expenses
+  type: skill
+  description: Expense listing filters, date parsing, and output behavior.
+```
+
+## Other Commands
+
+Groups are also supported with:
+
+- `splitwise-cli groups list`
+- `splitwise-cli groups get <groupId>`
+
+## Development
+
+```bash
+npm install
+npm run build
+npm run dev -- expenses list --from -7d
+```
