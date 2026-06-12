@@ -24,6 +24,9 @@
     "splitwise": "^2.0.0",
     "typescript": "^6.0.3"
   },
+  "overrides": {
+    "commander": "^15.0.0"
+  },
   "devDependencies": {
     "@types/figlet": "^1.7.0",
     "@types/js-yaml": "^4.0.9",
