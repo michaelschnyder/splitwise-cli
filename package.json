@@ -1,0 +1,32 @@
+{
+  "name": "splitwise-cli",
+  "version": "1.0.0",
+  "description": "A CLI client for the Splitwise API",
+  "main": "dist/index.js",
+  "bin": {
+    "splitwise-cli": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "commander": "^15.0.0",
+    "figlet": "^1.11.0",
+    "js-yaml": "^4.2.0",
+    "splitwise": "^2.0.0",
+    "typescript": "^6.0.3"
+  },
+  "devDependencies": {
+    "@types/figlet": "^1.7.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.9.3",
+    "tsx": "^4.22.4"
+  }
+}
