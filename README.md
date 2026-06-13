@@ -44,6 +44,8 @@ Credentials are stored at `~/.splitwise-cli/config.json`.
 | Expenses | Query expenses with date/person/group filters | `list`, `get` | [Expenses](#expenses) |
 | Skills | List/install/create assistant skill files | `list`, `path`, `install`, `create` | [Skills](#skills) |
 
+For global log flags, output streams, and debug behavior, see [Console Logging](#console-logging).
+
 ## Output Formats
 
 Use `-o` / `--output` when available.
@@ -164,10 +166,10 @@ splitwise-cli expenses get 99999 -o yaml
 ```text
 Showing expenses from 2026-06-01 to 2026-06-13
 
-ID         Date         Group      Paid By       Description              Cost        Category   Status
-────────   ──────────   ────────   ───────────   ───────────────────────  ──────────  ────────   ─────────────────
-99999      6/10/2026    Flatmates  Alex Example  Groceries                48.90 USD   Food       credit 24.45 USD
-99998      6/09/2026    Flatmates  Alex Example  Rent transfer -> Jo      650.00 USD  Payment    debit 325.00 USD
+ID         Date         Group/Friend   Paid By       Description              Costs      Category   Share
+────────   ──────────   ────────────   ───────────   ───────────────────────  ─────────  ────────   ───────────
+99999      6/10/2026    Flatmates      Alex Example  Groceries                48.90 USD  Food       24.45 USD
+99998      6/09/2026    Flatmates      Alex Example  Rent transfer -> Jo      650.00 USD Payment    325.00 USD
 
 • 2 item(s) | 71 ms | source: Splitwise API
 ```
@@ -196,6 +198,52 @@ ID         Date         Group      Paid By       Description              Cost  
     "deletedByName": ""
   }
 ]
+```
+
+## Console Logging
+
+Logging and progress output are powered by `consola`.
+
+Global logging controls:
+
+| Flag | Description |
+|---|---|
+| `--log <level>` | explicit level: `error`, `warn`, `info`, `debug`, `trace` |
+| `-v` | increase verbosity (`-v`, `-vv`, `-vvv`, `-vvvv`) |
+
+Environment override:
+
+- `SW_DEBUG=1|yes|true` forces trace-level logging in all modes.
+
+Stream contract:
+
+- Structured payloads (`-o json`, `-o yaml`) are printed to `stdout`.
+- Logs, warnings, errors, and progress/status text are printed to `stderr`.
+
+HTTP client logging:
+
+- Request/response lifecycle logs include method, URL, status code, duration, and attempt.
+- Error logs include method, URL, duration, and error message.
+- Headers and response/request content are intentionally not logged.
+
+Color behavior:
+
+- Colored logs are shown only in table/TUI mode.
+- JSON and YAML modes keep logs uncolored to stay script-friendly.
+
+Icons and progress indicators:
+
+- In TUI/table mode, status lines are icon-first (for example info/success) without the `INFO` text label.
+- TUI progress uses an animated spinner on supported terminals.
+- Progress completion uses a success icon when done and an error icon when failed.
+- On minimal terminals, icon/spinner output falls back to ASCII-safe symbols.
+
+Examples:
+
+```bash
+splitwise-cli friends list --log info
+splitwise-cli expenses list -vv --from -30d
+SW_DEBUG=true splitwise-cli groups get 12345 -o json
 ```
 
 ## Skills

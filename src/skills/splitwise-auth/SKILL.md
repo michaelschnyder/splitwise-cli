@@ -29,6 +29,13 @@ splitwise-cli auth set-oauth <consumerKey> <consumerSecret>
 splitwise-cli auth whoami -o json
 ~~~
 
+## Logging and Debug
+
+- Use `--log <level>` (`error|warn|info|debug|trace`) for explicit logging.
+- Use `-v/-vv/-vvv/-vvvv` for verbosity shorthand.
+- Set `SW_DEBUG=1|yes|true` to force trace logs.
+- In `-o json` mode, payload stays on stdout and logs go to stderr.
+
 ## Typical Workflow
 
 ~~~bash

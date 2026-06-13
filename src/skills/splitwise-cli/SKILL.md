@@ -62,6 +62,24 @@ Most list/get commands support -o table|json|yaml.
 
 When `-o/--output` is omitted, list commands default to TUI table mode with one intro line and one summary footer line (items/time/source).
 
+## Logging and Debug
+
+Global controls:
+
+- `--log <level>` where level is `error|warn|info|debug|trace`
+- `-v`, `-vv`, `-vvv`, `-vvvv` for increasing verbosity
+- `SW_DEBUG=1|yes|true` to force trace logs in every mode
+
+Stream behavior:
+
+- structured payload output stays on stdout
+- logs, warnings, errors, and progress/status go to stderr
+
+Color behavior:
+
+- colors are enabled for table/TUI mode
+- logs are uncolored for json/yaml mode
+
 ## Common Workflows
 
 ### Expense triage

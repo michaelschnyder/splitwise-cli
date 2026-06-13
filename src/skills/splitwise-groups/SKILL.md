@@ -49,6 +49,13 @@ splitwise-cli expenses list --group <id> --from -30d
 
 - In implicit TUI mode (no `-o`), groups list output includes one intro line, a readable title-cased table, and one summary footer line with items/time/source.
 
+## Logging and Debug
+
+- Use `--log <level>` (`error|warn|info|debug|trace`) for explicit logging.
+- Use `-v/-vv/-vvv/-vvvv` for verbosity shorthand.
+- Set `SW_DEBUG=1|yes|true` to force trace logs.
+- Structured outputs remain parse-safe on stdout; logs/progress go to stderr.
+
 ## Failure Handling
 
 | Problem | Cause | Fix |

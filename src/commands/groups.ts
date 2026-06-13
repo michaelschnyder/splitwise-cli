@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { getClient } from '../lib/config.js';
 import {
   addOutputOption, getFormat, formatName, render, renderOne, renderTuiList,
-  isTuiDefault, colorize, createTuiProgress,
+  isTuiDefault, colorize, createTuiProgress, createLogger, writeTuiInfoSpacer,
 } from '../lib/output.js';
 
 export function registerGroups(program: Command): void {
@@ -11,14 +11,21 @@ export function registerGroups(program: Command): void {
   addOutputOption(groups.command('list'))
     .description('List groups')
     .action(async function (this: Command) {
-      const sw = getClient();
+      const sw = getClient(this);
+      const logger = createLogger(this, 'groups');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
       const startedAt = Date.now();
       const progress = createTuiProgress(tuiMode);
+      let list;
       progress.start('Fetching groups...');
-      const list = await sw.groups.list();
-      progress.stop();
+      try {
+        list = await sw.groups.list();
+      } catch (err) {
+        progress.fail('Failed to fetch groups.');
+        throw err;
+      }
+      progress.stop(tuiMode ? 'Fetched groups.' : undefined, 'success');
       const rows = list.map((g) => ({ id: g.id, name: g.name, members: g.members?.length ?? 0 }));
 
       if (tuiMode && fmt === 'table') {
@@ -26,6 +33,7 @@ export function registerGroups(program: Command): void {
           intro: 'Showing groups',
           source: 'Splitwise API',
           startedAt,
+          logger,
         });
         return;
       }
@@ -36,14 +44,24 @@ export function registerGroups(program: Command): void {
   addOutputOption(groups.command('get <id>'))
     .description('Get details for a group')
     .action(async function (this: Command, id: string) {
-      const sw = getClient();
+      const sw = getClient(this);
+      const logger = createLogger(this, 'groups');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
-      if (tuiMode) console.log(colorize(`Showing group details for ${id}`, 'cyan'));
+      if (tuiMode) {
+        writeTuiInfoSpacer(true);
+        logger.info(`Showing group details for ${id}`);
+      }
       const progress = createTuiProgress(tuiMode);
+      let g;
       progress.start('Fetching group details...');
-      const g = await sw.groups.get({ id: Number(id) });
-      progress.stop(colorize('Fetched group details.', 'green'));
+      try {
+        g = await sw.groups.get({ id: Number(id) });
+      } catch (err) {
+        progress.fail('Failed to fetch group details.');
+        throw err;
+      }
+      progress.stop('Fetched group details.', 'success');
       renderOne(
         {
           id: g.id,
@@ -51,6 +69,7 @@ export function registerGroups(program: Command): void {
           members: g.members?.map(formatName).join(', ') ?? '',
         },
         fmt,
+        { tuiMode },
       );
     });
 }

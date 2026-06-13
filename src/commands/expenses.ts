@@ -5,11 +5,76 @@ import { getClient } from '../lib/config.js';
 import {
   addOutputOption, getFormat, formatName,
   render, renderOne, renderEmptyList,
-  isTuiDefault, colorize, createTuiProgress,
+  isTuiDefault, colorize, createTuiProgress, createLogger, writeTuiInfoSpacer,
   visualWidth, padStartVisual, padEndVisual,
   type OutputFormat,
 } from '../lib/output.js';
 import { parseDate } from '../lib/dates.js';
+
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
+const MIN_TRUNCATED_WIDTH = 13; // 10 visible characters + "..."
+
+type TruncationKey = 'group' | 'paidBy' | 'description' | 'category';
+
+function stripAnsi(input: string): string {
+  return input.replace(ANSI_ESCAPE_RE, '');
+}
+
+function truncateVisual(input: string, maxWidth: number): string {
+  if (maxWidth <= 0) return '';
+  const plain = stripAnsi(input);
+  if (visualWidth(plain) <= maxWidth) return plain;
+  if (maxWidth <= 3) return '.'.repeat(maxWidth);
+
+  const target = maxWidth - 3;
+  let out = '';
+  let used = 0;
+  const hasGraphemeSegmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function';
+  const segments = hasGraphemeSegmenter
+    ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(plain)].map((s) => s.segment)
+    : Array.from(plain);
+
+  for (const segment of segments) {
+    const segmentWidth = visualWidth(segment);
+    if (used + segmentWidth > target) break;
+    out += segment;
+    used += segmentWidth;
+  }
+  return `${out}...`;
+}
+
+function uniquePrefixLength(value: string, allValues: string[]): number {
+  const normalized = value.toLocaleLowerCase();
+  if (!normalized) return 0;
+  for (let len = 1; len <= normalized.length; len++) {
+    const prefix = normalized.slice(0, len);
+    const collisions = allValues.filter((other) => {
+      if (other === normalized) return false;
+      return other.startsWith(prefix);
+    });
+    if (collisions.length === 0) return len;
+  }
+  return normalized.length;
+}
+
+function minWidthForDistinctValues(values: string[]): number {
+  const normalized = [...new Set(values
+    .map((v) => stripAnsi(v).trim().toLocaleLowerCase())
+    .filter(Boolean))];
+  if (normalized.length <= 1) return MIN_TRUNCATED_WIDTH;
+  const maxPrefix = Math.max(...normalized.map((v) => uniquePrefixLength(v, normalized)));
+  return Math.max(MIN_TRUNCATED_WIDTH, maxPrefix + 3);
+}
+
+function terminalColumns(): number {
+  const cols = process.stdout.columns;
+  if (typeof cols !== 'number' || cols <= 0) return Number.POSITIVE_INFINITY;
+  return cols;
+}
+
+function normalizeDisplayWhitespace(input: string): string {
+  return input.replace(/\s{2,}/g, ' ').trim();
+}
 
 export function registerExpenses(program: Command): void {
   const expenses = program.command('expenses').description('View and create expenses');
@@ -37,7 +102,8 @@ export function registerExpenses(program: Command): void {
         involved?: string; payer?: string; query?: string;
       },
     ) {
-      const sw = getClient();
+      const sw = getClient(this);
+      const logger = createLogger(this, 'expenses');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
 
@@ -93,11 +159,11 @@ export function registerExpenses(program: Command): void {
         ).values()];
 
         if (unique.length === 0) {
-          console.warn(`Warning: no user matching "${value}" for ${label} — filter ignored.`);
+          logger.warn(`Warning: no user matching "${value}" for ${label} - filter ignored.`);
           return undefined;
         }
         if (unique.length > 1) {
-          console.error(
+          logger.error(
             `Ambiguous ${label} "${value}" — matches: ${unique.map((u) => `"${formatName(u)}"`).join(', ')}. Be more specific.`,
           );
           process.exit(1);
@@ -116,12 +182,12 @@ export function registerExpenses(program: Command): void {
           const needle = opts.group.toLowerCase();
           const matches = allGroups.filter((g) => g.name.toLowerCase().includes(needle));
           if (matches.length === 0) {
-            console.warn(`Warning: no group matching "${opts.group}" — returning empty list.`);
+            logger.warn(`Warning: no group matching "${opts.group}" - returning empty list.`);
             renderEmptyList(fmt);
             return;
           }
           if (matches.length > 1) {
-            console.error(
+            logger.error(
               `Ambiguous group "${opts.group}" — matches: ${matches.map((g) => `"${g.name}"`).join(', ')}. Be more specific.`,
             );
             process.exit(1);
@@ -144,12 +210,12 @@ export function registerExpenses(program: Command): void {
             (f.firstName ?? '').toLowerCase().includes(needle),
           );
           if (matches.length === 0) {
-            console.warn(`Warning: no friend matching "${opts.friend}" — returning empty list.`);
+            logger.warn(`Warning: no friend matching "${opts.friend}" - returning empty list.`);
             renderEmptyList(fmt);
             return;
           }
           if (matches.length > 1) {
-            console.error(
+            logger.error(
               `Ambiguous friend "${opts.friend}" — matches: ${matches.map((f) => `"${formatName(f)}"`).join(', ')}. Be more specific.`,
             );
             process.exit(1);
@@ -194,14 +260,13 @@ export function registerExpenses(program: Command): void {
       if (tuiMode) {
         const fromLabel = datedAfter ?? 'Splitwise implicit default start';
         const toLabel = datedBefore ?? 'today';
-        console.log('');
-        console.log(colorize(`Showing expenses from ${fromLabel} to ${toLabel}`, 'cyan'));
+        logger.info(`Showing expenses from ${fromLabel} to ${toLabel}`);
       }
 
       const progress = createTuiProgress(tuiMode);
 
       // ── Row builders ──────────────────────────────────────────────────────
-      type TableRow = { id: number; date: string; group: string; paidBy: string; description: string; cost: string; category: string; status: string };
+      type TableRow = { id: number; date: string; group: string; paidBy: string; description: string; cost: string; category: string; share: string };
       type SplitRow = { userId: number; name: string; paid: string; owes: string };
       type CommentRow = { id: number; content: string; author: string; createdAt: string };
       type FullRow = {
@@ -236,11 +301,12 @@ export function registerExpenses(program: Command): void {
         const net = myPaid - myOwes;
         const isEffectivelyZero = Math.abs(net) < 0.005;
 
-        let status = 'n/a';
+        let share = '';
         if (myEntry) {
-          if (isEffectivelyZero) status = colorize('settled', 'dim');
-          else if (net < 0) status = colorize(`debit ${Math.abs(net).toFixed(2)} ${e.currencyCode}`, 'red');
-          else status = colorize(`credit ${net.toFixed(2)} ${e.currencyCode}`, 'green');
+          const absShare = `${Math.abs(net).toFixed(2)} ${e.currencyCode}`;
+          if (isEffectivelyZero) share = colorize(absShare, 'dim');
+          else if (net < 0) share = colorize(absShare, 'red');
+          else share = colorize(absShare, 'green');
         }
 
         const costNum = Number(e.cost);
@@ -255,12 +321,12 @@ export function registerExpenses(program: Command): void {
         return {
           id: e.id,
           date: e.date ? new Date(e.date).toLocaleDateString() : '?',
-          group: resolveGroup(e.groupId),
+          group: normalizeDisplayWhitespace(resolveGroup(e.groupId)),
           paidBy: payer ? formatName(payer.user) : '',
           description: styledDescription,
           cost,
           category: styledCategory,
-          status,
+          share,
         };
       };
 
@@ -309,26 +375,111 @@ export function registerExpenses(program: Command): void {
       const TABLE_COLUMNS: { key: keyof TableRow; label: string }[] = [
         { key: 'id', label: tuiMode ? 'ID' : 'id' },
         { key: 'date', label: tuiMode ? 'Date' : 'date' },
-        { key: 'group', label: tuiMode ? 'Group' : 'group' },
+        { key: 'group', label: tuiMode ? 'Group/Friend' : 'group' },
         { key: 'paidBy', label: tuiMode ? 'Paid By' : 'paidBy' },
         { key: 'description', label: tuiMode ? 'Description' : 'description' },
-        { key: 'cost', label: tuiMode ? 'Cost' : 'cost' },
+        { key: 'cost', label: tuiMode ? 'Costs' : 'costs' },
         { key: 'category', label: tuiMode ? 'Category' : 'category' },
-        { key: 'status', label: tuiMode ? 'Status' : 'status' },
+        { key: 'share', label: tuiMode ? 'Share' : 'share' },
       ];
-      const RIGHT_ALIGN = new Set<keyof TableRow>(['cost']);
+      const RIGHT_ALIGN = new Set<keyof TableRow>(['cost', 'share']);
+      const TRUNCATABLE = new Set<TruncationKey>(['group', 'paidBy', 'description', 'category']);
+      const SHRINK_PRIORITY: TruncationKey[] = ['category', 'paidBy', 'group', 'description'];
       const tableGap = tuiMode ? '   ' : '  ';
       let tableWidths: number[] | null = null;
       let jsonStarted = false;
       let totalPrinted = 0;
 
+      const rawGroupNames = allGroups.map((g) => g.name);
+      const rawFriendNames = allFriends.map((f) => formatName(f));
+
+      const plannedMinWidth = (
+        key: keyof TableRow,
+        rows: TableRow[],
+        labelWidth: number,
+      ): number => {
+        const rowValues = rows.map((r) => String(r[key] ?? ''));
+        if (key === 'group') {
+          const width = minWidthForDistinctValues([...rawGroupNames, ...rawFriendNames, ...rowValues]);
+          return Math.max(labelWidth, width);
+        }
+        if (key === 'description') {
+          const width = minWidthForDistinctValues(rowValues);
+          return Math.max(labelWidth, width);
+        }
+        if (key === 'paidBy' || key === 'category') {
+          return Math.max(labelWidth, MIN_TRUNCATED_WIDTH);
+        }
+        return labelWidth;
+      };
+
+      const planTableWidths = (rows: TableRow[]): number[] => {
+        const labels = TABLE_COLUMNS.map((c) => c.label);
+        const naturalWidths = TABLE_COLUMNS.map(({ key }, i) => {
+          const labelWidth = visualWidth(labels[i]);
+          return Math.max(labelWidth, ...rows.map((r) => visualWidth(String(r[key] ?? ''))));
+        });
+        const minWidths = TABLE_COLUMNS.map(({ key }, i) =>
+          plannedMinWidth(key, rows, visualWidth(labels[i])),
+        );
+
+        const available = terminalColumns();
+        if (!Number.isFinite(available)) return naturalWidths;
+
+        const widths = [...naturalWidths];
+        const gapWidth = visualWidth(tableGap) * (TABLE_COLUMNS.length - 1);
+        const total = () => widths.reduce((sum, w) => sum + w, 0) + gapWidth;
+
+        if (total() <= available) return widths;
+
+        while (total() > available) {
+          let shrunk = false;
+          for (const key of SHRINK_PRIORITY) {
+            const colIndex = TABLE_COLUMNS.findIndex((c) => c.key === key);
+            if (colIndex < 0) continue;
+            if (widths[colIndex] > minWidths[colIndex]) {
+              widths[colIndex] -= 1;
+              shrunk = true;
+              if (total() <= available) return widths;
+            }
+          }
+          if (!shrunk) break;
+        }
+
+        if (total() <= available) return widths;
+
+        const fallbackOrder: Array<keyof TableRow> = ['date', 'id'];
+        const fallbackMins: Partial<Record<keyof TableRow, number>> = {
+          date: Math.max(visualWidth('Date'), 10),
+          id: Math.max(visualWidth('ID'), 6),
+        };
+        for (const key of fallbackOrder) {
+          const colIndex = TABLE_COLUMNS.findIndex((c) => c.key === key);
+          if (colIndex < 0) continue;
+          const min = Math.max(
+            visualWidth(TABLE_COLUMNS[colIndex].label),
+            fallbackMins[key] ?? 0,
+          );
+          while (total() > available && widths[colIndex] > min) {
+            widths[colIndex] -= 1;
+          }
+          if (total() <= available) return widths;
+        }
+
+        return widths;
+      };
+
+      const fitCell = (key: keyof TableRow, value: string, width: number): string => {
+        if (visualWidth(stripAnsi(value)) <= width) return value;
+        if (!TRUNCATABLE.has(key as TruncationKey)) return value;
+        return truncateVisual(value, width);
+      };
+
       const flushTableRows = (rows: TableRow[]) => {
         if (rows.length === 0) return;
         if (tableWidths === null) {
           if (tuiMode) process.stdout.write('\n');
-          tableWidths = TABLE_COLUMNS.map(({ key, label }) =>
-            Math.max(visualWidth(label), ...rows.map((r) => visualWidth(String(r[key] ?? '')))),
-          );
+          tableWidths = planTableWidths(rows);
           process.stdout.write(
             TABLE_COLUMNS.map(({ key, label }, i) =>
               RIGHT_ALIGN.has(key) ? padStartVisual(label, tableWidths![i]) : padEndVisual(label, tableWidths![i]),
@@ -340,7 +491,7 @@ export function registerExpenses(program: Command): void {
           process.stdout.write(
             TABLE_COLUMNS.map(({ key }, i) => {
               const k = key;
-              const cell = String(row[k] ?? '');
+              const cell = fitCell(k, String(row[k] ?? ''), tableWidths![i]);
               return RIGHT_ALIGN.has(k) ? padStartVisual(cell, tableWidths![i]) : padEndVisual(cell, tableWidths![i]);
             }).join(tableGap) + '\n',
           );
@@ -375,7 +526,7 @@ export function registerExpenses(program: Command): void {
         else if (totalPrinted === 0) process.stdout.write(fmt === 'yaml' ? '[]\n' : '(no results)\n');
         if (tuiMode) {
           const elapsed = Date.now() - startedAt;
-          console.log(colorize(`\n• ${totalPrinted} item(s) | ${elapsed} ms | source: Splitwise API`, 'dim'));
+          logger.info(`• ${totalPrinted} item(s) | ${elapsed} ms | source: Splitwise API`);
         }
       };
 
@@ -416,17 +567,28 @@ export function registerExpenses(program: Command): void {
   addOutputOption(expenses.command('get <id>'))
     .description('Get details for an expense')
     .action(async function (this: Command, id: string) {
-      const sw = getClient();
+      const sw = getClient(this);
+      const logger = createLogger(this, 'expenses');
       const fmt: OutputFormat = getFormat(this);
       const tuiMode = isTuiDefault(this);
-      if (tuiMode) console.log(colorize(`Showing expense details for ${id}`, 'cyan'));
+      if (tuiMode) {
+        writeTuiInfoSpacer(true);
+        logger.info(`Showing expense details for ${id}`);
+      }
       const progress = createTuiProgress(tuiMode);
+      let e;
+      let fetchedComments;
       progress.start('Fetching expense details...');
-      const [e, fetchedComments] = await Promise.all([
-        sw.expenses.get({ id: Number(id) }),
-        sw.comments.list({ expenseId: Number(id) }),
-      ]);
-      progress.stop(colorize('Fetched expense details.', 'green'));
+      try {
+        [e, fetchedComments] = await Promise.all([
+          sw.expenses.get({ id: Number(id) }),
+          sw.comments.list({ expenseId: Number(id) }),
+        ]);
+      } catch (err) {
+        progress.fail('Failed to fetch expense details.');
+        throw err;
+      }
+      progress.stop('Fetched expense details.', 'success');
 
       const comments = fetchedComments.map((c) => ({
         id: c.id,
@@ -451,9 +613,12 @@ export function registerExpenses(program: Command): void {
             updatedBy: formatName(e.updatedBy),
           },
           fmt,
+          { tuiMode },
         );
         if (e.users && e.users.length > 0) {
-          console.log('\nShares:');
+          if (tuiMode) writeTuiInfoSpacer(true);
+          logger.info('Shares:');
+          if (tuiMode) process.stdout.write('\n');
           console.table(
             e.users.map((u) => ({
               name: formatName(u.user),
@@ -461,10 +626,14 @@ export function registerExpenses(program: Command): void {
               owes: u.owedShare,
             })),
           );
+          if (tuiMode) process.stdout.write('\n');
         }
         if (comments.length > 0) {
-          console.log('\nComments:');
+          if (tuiMode) writeTuiInfoSpacer(true);
+          logger.info('Comments:');
+          if (tuiMode) process.stdout.write('\n');
           console.table(comments);
+          if (tuiMode) process.stdout.write('\n');
         }
       } else {
         render(

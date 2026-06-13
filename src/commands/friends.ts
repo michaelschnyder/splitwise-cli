@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { getClient } from '../lib/config.js';
 import {
   addOutputOption, getFormat, formatName, render, renderTuiList,
-  isTuiDefault, colorize, createTuiProgress,
+  isTuiDefault, createTuiProgress, createLogger,
 } from '../lib/output.js';
 
 export function registerFriends(program: Command): void {
@@ -11,14 +11,21 @@ export function registerFriends(program: Command): void {
   addOutputOption(friends.command('list'))
     .description('List friends and balances')
     .action(async function (this: Command) {
-      const sw = getClient();
+      const sw = getClient(this);
+      const logger = createLogger(this, 'friends');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
       const startedAt = Date.now();
       const progress = createTuiProgress(tuiMode);
+      let list;
       progress.start('Fetching friends...');
-      const list = await sw.friends.list();
-      progress.stop();
+      try {
+        list = await sw.friends.list();
+      } catch (err) {
+        progress.fail('Failed to fetch friends.');
+        throw err;
+      }
+      progress.stop(tuiMode ? 'Fetched friends.' : undefined, 'success');
       const rows = list.map((f) => {
         const balances = f.balance ?? [];
         return {
@@ -35,6 +42,7 @@ export function registerFriends(program: Command): void {
           intro: 'Showing friends and balances',
           source: 'Splitwise API',
           startedAt,
+          logger,
         });
         return;
       }

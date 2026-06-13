@@ -7,6 +7,7 @@ import { registerFriends } from './commands/friends.js';
 import { registerGroups } from './commands/groups.js';
 import { registerExpenses } from './commands/expenses.js';
 import { registerSkills } from './commands/skills.js';
+import { addLoggingOptions, createLogger } from './lib/output.js';
 
 const program = new Command();
 
@@ -15,6 +16,8 @@ program
   .description(figlet.textSync('Splitwise CLI', { horizontalLayout: 'full' }))
   .version('1.0.0');
 
+addLoggingOptions(program);
+
 registerAuth(program);
 registerFriends(program);
 registerGroups(program);
@@ -22,6 +25,7 @@ registerExpenses(program);
 registerSkills(program);
 
 program.parseAsync(process.argv).catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
+  const logger = createLogger();
+  logger.error(err instanceof Error ? err.message : String(err));
+  process.exitCode = 1;
 });

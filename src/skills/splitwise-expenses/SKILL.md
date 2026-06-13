@@ -91,7 +91,14 @@ splitwise-cli expenses get <id> -o yaml
   - one intro line,
   - title-cased table headers with `ID` as first column,
   - one summary footer line with items/time/source.
-- Expense status uses `credit` (green) and `debit` (red); payment descriptions are dimmed.
+- Expense `Share` uses color only (green/red/dim) with numeric values; payment descriptions are dimmed.
+
+## Logging and Debug
+
+- Use `--log <level>` (`error|warn|info|debug|trace`) for explicit logging.
+- Use `-v/-vv/-vvv/-vvvv` for verbosity shorthand.
+- `SW_DEBUG=1|yes|true` forces trace-level logs in any output mode.
+- Structured payload (`-o json` or `-o yaml`) remains on stdout while logs/progress are emitted on stderr.
 
 ~~~bash
 splitwise-cli expenses list --all -o json

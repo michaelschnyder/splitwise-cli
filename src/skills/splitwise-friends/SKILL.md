@@ -51,6 +51,13 @@ splitwise-cli expenses list --friend <id|name> --from -30d
   - readable title-cased table,
   - one summary footer line with items/time/source.
 
+## Logging and Debug
+
+- Use `--log <level>` (`error|warn|info|debug|trace`) for explicit logging.
+- Use `-v/-vv/-vvv/-vvvv` for verbosity shorthand.
+- Set `SW_DEBUG=1|yes|true` to force trace logs.
+- In structured output modes, data remains on stdout and logs are emitted on stderr.
+
 ## Failure Handling
 
 | Problem | Cause | Fix |

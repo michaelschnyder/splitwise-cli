@@ -10,13 +10,14 @@ import {
 } from '../lib/skills.js';
 import {
   addOutputOption, getFormat, render, renderTuiList,
-  isTuiDefault, colorize, createTuiProgress,
+  isTuiDefault, createTuiProgress, createLogger,
 } from '../lib/output.js';
 
 function resolveOrBail(input?: string): string[] {
+  const logger = createLogger(undefined, 'skills');
   const platforms = resolvePlatformList(input);
   if (platforms.length === 0) {
-    console.error(
+    logger.error(
       'Could not auto-detect AI assistant platform. Specify one explicitly: claude, cursor, codex, opencode, windsurf, gemini, or all.',
     );
     process.exit(1);
@@ -24,7 +25,7 @@ function resolveOrBail(input?: string): string[] {
 
   for (const p of platforms) {
     if (!lookupPlatform(p)) {
-      console.error(
+      logger.error(
         `Unknown platform "${p}". Supported: ${supportedPlatformNames().join(', ')}, all.`,
       );
       process.exit(1);
@@ -40,6 +41,7 @@ export function registerSkills(program: Command): void {
   addOutputOption(skills.command('list'))
     .description('List built-in Splitwise skills')
     .action(function (this: Command) {
+      const logger = createLogger(this, 'skills');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
       const startedAt = Date.now();
@@ -57,6 +59,7 @@ export function registerSkills(program: Command): void {
           intro: 'Showing built-in skills',
           source: 'splitwise-cli built-ins',
           startedAt,
+          logger,
         });
         return;
       }
@@ -69,6 +72,7 @@ export function registerSkills(program: Command): void {
     .description('Print install paths for one platform, all platforms, or auto-detected platform')
     .option('--project', 'Use project-local scope instead of user-global scope')
     .action((platform: string | undefined, opts: { project?: boolean }) => {
+      const logger = createLogger(undefined, 'skills');
       const { root } = projectRootOrCwd();
       const userScope = !opts.project;
       const scopeLabel = userScope ? 'user' : 'project';
@@ -77,13 +81,13 @@ export function registerSkills(program: Command): void {
       for (const p of platforms) {
         const dir = skillsDir(p, root, userScope);
         if (!dir) {
-          console.log(`platform: ${p} (scope: ${scopeLabel})`);
-          console.log('  skills: not supported');
+          logger.info(`platform: ${p} (scope: ${scopeLabel})`);
+          logger.info('  skills: not supported');
           continue;
         }
 
-        console.log(`platform: ${p} (scope: ${scopeLabel})`);
-        console.log(`  skills: ${dir}`);
+        logger.info(`platform: ${p} (scope: ${scopeLabel})`);
+        logger.info(`  skills: ${dir}`);
       }
     });
 
@@ -98,6 +102,7 @@ export function registerSkills(program: Command): void {
       platform: string | undefined,
       opts: { name?: string; dir?: string; project?: boolean; force?: boolean },
     ) => {
+      const logger = createLogger(undefined, 'skills');
       const { root } = projectRootOrCwd();
       const userScope = !opts.project;
       const selected = opts.name
@@ -105,7 +110,7 @@ export function registerSkills(program: Command): void {
         : SKILLS;
 
       if (opts.name && selected.length === 0) {
-        console.error(`skill not found: ${opts.name}`);
+        logger.error(`skill not found: ${opts.name}`);
         process.exit(1);
       }
 
@@ -125,14 +130,14 @@ export function registerSkills(program: Command): void {
       }
 
       if (installedFiles === 0 && (opts.name || opts.force !== true)) {
-        console.error('No files were written. Use --force to overwrite existing skill files.');
+        logger.error('No files were written. Use --force to overwrite existing skill files.');
         process.exit(1);
       }
 
       for (const d of dirsUsed) {
-        console.log(`  ${d}`);
+        logger.info(`  ${d}`);
       }
-      console.log(
+      logger.success(
         `Installed ${selected.length} skill(s), wrote ${installedFiles} file(s) across ${platforms.length} platform(s).`,
       );
     });
@@ -144,24 +149,25 @@ export function registerSkills(program: Command): void {
     .option('--dir <path>', 'Destination directory for generated skills', 'skills')
     .option('--force', 'Overwrite existing SKILL.md files')
     .action((opts: { name?: string; dir: string; force?: boolean }) => {
+      const logger = createLogger(undefined, 'skills');
       const selected = opts.name
         ? SKILLS.filter((s) => s.name === opts.name)
         : SKILLS;
 
       if (opts.name && selected.length === 0) {
-        console.error(`skill not found: ${opts.name}`);
+        logger.error(`skill not found: ${opts.name}`);
         process.exit(1);
       }
 
       const result = installSkillFiles(opts.dir, selected, Boolean(opts.force));
       if (result.filesWritten === 0 && !opts.force) {
-        console.error('No files were written. Use --force to overwrite existing skill files.');
+        logger.error('No files were written. Use --force to overwrite existing skill files.');
         process.exit(1);
       }
 
       for (const d of result.directoriesTouched) {
-        console.log(`  ${d}`);
+        logger.info(`  ${d}`);
       }
-      console.log(`Created ${selected.length} skill(s), wrote ${result.filesWritten} file(s).`);
+      logger.success(`Created ${selected.length} skill(s), wrote ${result.filesWritten} file(s).`);
     });
 }

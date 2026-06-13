@@ -1,9 +1,12 @@
+import { createLogger } from './output.js';
+
 /**
  * Parse a date string that is either an ISO date (YYYY-MM-DD) or a relative
  * expression like -10d, -2w, -1month, -3months, -1y.
  * Returns an ISO date string (YYYY-MM-DD).
  */
 export function parseDate(input: string): string {
+  const logger = createLogger(undefined, 'dates');
   const rel = input.match(/^([+-]?\d+)\s*(d|day|days|w|week|weeks|m|month|months|y|year|years)$/i);
   if (rel) {
     const n = parseInt(rel[1], 10);
@@ -17,7 +20,7 @@ export function parseDate(input: string): string {
   }
   // Validate ISO date loosely
   if (!/^\d{4}-\d{2}-\d{2}/.test(input)) {
-    console.error(`Invalid date "${input}". Use YYYY-MM-DD or a relative value like -10d, -2w, -1month.`);
+    logger.error(`Invalid date "${input}". Use YYYY-MM-DD or a relative value like -10d, -2w, -1month.`);
     process.exit(1);
   }
   return input;
