@@ -27,10 +27,10 @@ Query recent expenses, inspect details, and filter by group, friend, date, payer
 ## Prerequisites
 
 ~~~bash
-splitwise-cli auth whoami
+splitwise-cli login whoami
 ~~~
 
-If auth is missing, set credentials first.
+If login is missing, set credentials first.
 
 ## List Expenses
 

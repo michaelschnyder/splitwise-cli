@@ -4,6 +4,7 @@ import {
   type Profile,
   getClient,
   getLockRecoveryMessage,
+  listCredentialNames,
   getProfilePath,
   listProfileNames,
   loadProfile,
@@ -34,6 +35,8 @@ type MutableProfileOptions = {
   limitExpensesToFriends?: string;
   clearExpenseGroupLimit?: boolean;
   clearExpenseFriendLimit?: boolean;
+  profileCredential?: string;
+  clearProfileCredential?: boolean;
 };
 
 function parseBoolInput(field: string, value: string, logger: ReturnType<typeof createLogger>): boolean {
@@ -177,6 +180,20 @@ async function applyMutableOptions(
     next.limitExpensesToFriendIds = null;
   }
 
+  if (options.clearProfileCredential) {
+    delete next.credential;
+  }
+
+  if (options.profileCredential !== undefined) {
+    const name = options.profileCredential.trim();
+    const credentials = new Set(listCredentialNames());
+    if (!credentials.has(name)) {
+      logger.error(`Credential "${name}" does not exist.`);
+      process.exit(1);
+    }
+    next.credential = name;
+  }
+
   if (options.limitExpensesToGroups !== undefined) {
     const parsed = parseRestrictionTokens(options.limitExpensesToGroups);
     if (parsed.mode === 'none') next.limitExpensesToGroupIds = [];
@@ -207,7 +224,9 @@ function attachMutableOptions(cmd: Command): Command {
     .option('--limit-expenses-to-groups <items>', 'Limit expenses scope to group ids or names (comma-separated). Use none for empty list, null for unrestricted')
     .option('--limit-expenses-to-friends <items>', 'Limit expenses scope to friend ids or names (comma-separated). Use none for empty list, null for unrestricted')
     .option('--clear-expense-group-limit', 'Set expense group scope to unrestricted (null)')
-    .option('--clear-expense-friend-limit', 'Set expense friend scope to unrestricted (null)');
+    .option('--clear-expense-friend-limit', 'Set expense friend scope to unrestricted (null)')
+    .option('--profile-credential <name>', 'Bind this profile to a credential name')
+    .option('--clear-profile-credential', 'Remove bound profile credential');
 }
 
 export function registerProfiles(program: Command): void {
@@ -226,6 +245,7 @@ export function registerProfiles(program: Command): void {
         return {
           name,
           active: name === active ? 'yes' : 'no',
+          credential: profile.credential ?? '',
           locked: profile.locked ? 'yes' : 'no',
           createExpenses: profile.createExpenses ?? true,
           updateExpenses: profile.updateExpenses ?? true,
@@ -260,6 +280,7 @@ export function registerProfiles(program: Command): void {
       renderOne(
         {
           name,
+          credential: profile.credential ?? null,
           locked: profile.locked ?? false,
           createExpenses: profile.createExpenses,
           updateExpenses: profile.updateExpenses,

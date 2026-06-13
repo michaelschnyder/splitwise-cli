@@ -50,6 +50,10 @@ export function addProfileOption(cmd: Command): Command {
   return cmd.option('-p, --profile <name>', 'Use a profile by name');
 }
 
+export function addCredentialOption(cmd: Command): Command {
+  return cmd.option('-c, --credential <name>', 'Use a credential by name');
+}
+
 export function hasExplicitOutputOption(cmd: Command): boolean {
   const output = (cmd.optsWithGlobals() as { output?: string }).output;
   return output !== undefined && output !== null;

@@ -1,10 +1,10 @@
 ---
 name: splitwise-cli
-description: Splitwise CLI command reference for auth, profiles, friends, groups, and expenses.
+description: Splitwise CLI command reference for login, profiles, friends, groups, and expenses.
 metadata:
   version: "1.0.1"
   author: splitwise-cli
-  tags: splitwise,cli,expenses,groups,friends,auth
+  tags: splitwise,cli,expenses,groups,friends,login
   alwaysApply: "false"
 ---
 
@@ -16,7 +16,7 @@ Use this skill when you need command-driven access to Splitwise data from a term
 
 | Task | Command |
 |------|---------|
-| Check current user | `splitwise-cli auth whoami` |
+| Check current user | `splitwise-cli login whoami` |
 | List profiles | `splitwise-cli profiles list` |
 | List friends and balances | `splitwise-cli friends list` |
 | List groups | `splitwise-cli groups list` |
@@ -36,14 +36,14 @@ npm run build
 Authenticate before data commands:
 
 ~~~bash
-splitwise-cli auth set-token <token>
-splitwise-cli auth whoami
+splitwise-cli login token <token>
+splitwise-cli login whoami
 ~~~
 
 ## Quick Start
 
 ~~~bash
-splitwise-cli auth whoami
+splitwise-cli login whoami
 splitwise-cli friends list
 splitwise-cli groups list
 splitwise-cli expenses list --from -30d --all
@@ -51,7 +51,7 @@ splitwise-cli expenses list --from -30d --all
 
 ## Command Groups
 
-- auth: configure token/oauth credentials and verify current user.
+- login: manage named credentials and verify current user.
 - profiles: manage restrictions, active selection, and one-way lock behavior.
 - friends: list friends and balances.
 - groups: list groups or fetch group details.
@@ -102,7 +102,7 @@ splitwise-cli groups list
 
 | Problem | Likely Cause | Fix |
 |---|---|---|
-| Not authenticated | Missing credentials | Run `splitwise-cli auth set-token <token>` |
+| Not logged in | Missing credentials | Run `splitwise-cli login token <token>` |
 | Empty list with warning | No name/ID match | Use exact ID or a more specific name |
 | Ambiguous match error | Multiple partial matches | Use full name or numeric ID |
 | Date parse error | Invalid relative/ISO value | Use `YYYY-MM-DD` or `-10d` style values |

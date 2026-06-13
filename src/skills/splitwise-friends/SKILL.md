@@ -30,7 +30,7 @@ splitwise-cli friends list -o yaml
 ## Prerequisites
 
 ~~~bash
-splitwise-cli auth whoami
+splitwise-cli login whoami
 ~~~
 
 Balances are shown per currency. A friend with no balance is shown as settled up.
@@ -62,8 +62,8 @@ splitwise-cli expenses list --friend <id|name> --from -30d
 
 | Problem | Cause | Fix |
 |---|---|---|
-| Empty list | No friends in account or auth scope issue | Verify account in app and run `auth whoami` |
-| Authentication error | Missing/invalid credentials | Re-run `auth set-token` |
+| Empty list | No friends in account or credential scope issue | Verify account in app and run `login whoami` |
+| Login error | Missing/invalid credentials | Re-run `login token` |
 
 ## Command Discovery
 

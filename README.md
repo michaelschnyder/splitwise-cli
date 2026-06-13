@@ -20,12 +20,12 @@ npx splitwise-cli --help
 ## Quick Start
 
 ```bash
-# choose one auth mode
-splitwise-cli auth set-token YOUR_TOKEN
-# splitwise-cli auth set-oauth YOUR_KEY YOUR_SECRET
+# save login credentials (named entries are supported)
+splitwise-cli login token YOUR_TOKEN --name personal
+# splitwise-cli login oauth YOUR_KEY YOUR_SECRET --name work
 
-# verify auth
-splitwise-cli auth whoami
+# verify current login
+splitwise-cli login whoami
 
 # common commands
 splitwise-cli friends list
@@ -39,7 +39,7 @@ Configuration is stored under `~/.splitwise-cli/`.
 
 | Area | Summary | Commands | Jump |
 |---|---|---|---|
-| Auth | Configure credentials and inspect active user | `set-token`, `set-oauth`, `whoami` | [Auth](#auth) |
+| Login | Manage multiple login credentials and inspect current user | `token`, `oauth`, `list`, `status`, `select`, `default`, `remove`, `validate`, `whoami` | [Login](#login) |
 | Friends | List friends and balances | `list` | [Friends](#friends) |
 | Groups | List groups and fetch group details | `list`, `get` | [Groups](#groups) |
 | Expenses | Query expenses with date/person/group filters | `list`, `get` | [Expenses](#expenses) |
@@ -52,6 +52,11 @@ Global profile selection:
 
 - `-p, --profile <name>` selects a profile for the current command.
 - If the active profile is locked, switching profiles is blocked until the profile file is edited manually.
+
+Global credential selection:
+
+- `-c, --credential <name>` selects a credential for the current command.
+- Resolution order: explicit `--credential` -> profile credential -> active login credential -> default login credential.
 
 ## Output Formats
 
@@ -70,20 +75,25 @@ splitwise-cli friends list -o yaml
 splitwise-cli expenses list --from -7d -o json
 ```
 
-## Auth
+## Login
 
-Create credentials at [splitwise.com/apps/register](https://www.splitwise.com/apps/register).
+Create login credentials at [splitwise.com/apps/register](https://www.splitwise.com/apps/register).
 
 ### Commands
 
 ```bash
-splitwise-cli auth set-token YOUR_TOKEN
-splitwise-cli auth set-oauth YOUR_KEY YOUR_SECRET
-splitwise-cli auth whoami
-splitwise-cli auth whoami -o json
+splitwise-cli login token YOUR_TOKEN --name personal
+splitwise-cli login oauth YOUR_KEY YOUR_SECRET --name work
+splitwise-cli login list
+splitwise-cli login status
+splitwise-cli login select work
+splitwise-cli login default personal
+splitwise-cli login validate work
+splitwise-cli login whoami
+splitwise-cli login whoami -o json
 ```
 
-### Example Response (`auth whoami -o json`)
+### Example Response (`login whoami -o json`)
 
 ```json
 {
@@ -218,7 +228,7 @@ ID         Date         Group/Friend   Paid By       Description              Co
 
 ## Profiles
 
-Profiles control what the CLI is allowed to do. Credentials are not part of profiles.
+Profiles control what the CLI is allowed to do and can optionally bind a credential name.
 
 Restriction semantics:
 
@@ -231,15 +241,15 @@ Lock behavior:
 - `profiles lock` is one-way from the CLI (no unlock command)
 - lock confirmation is interactive in default TUI mode
 - in explicit output mode, pass `--yes` to confirm lock
-- when locked, auth updates and profile switching are blocked
+- when locked, login updates and profile/credential switching are blocked
 
 ### Commands
 
 ```bash
 splitwise-cli profiles list
 splitwise-cli profiles show default
-splitwise-cli profiles create work --create-expenses no
-splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345
+splitwise-cli profiles create work --create-expenses no --profile-credential personal
+splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345 --profile-credential work
 splitwise-cli profiles select work
 splitwise-cli profiles validate work
 splitwise-cli profiles lock work
@@ -256,6 +266,8 @@ splitwise-cli profiles lock work
 | `--limit-expenses-to-friends <items>` | comma-separated ids/names, `none` for empty list, `null` for unrestricted |
 | `--clear-expense-group-limit` | set expense group limit to unrestricted (`null`) |
 | `--clear-expense-friend-limit` | set expense friend limit to unrestricted (`null`) |
+| `--profile-credential <name>` | bind a profile to a credential |
+| `--clear-profile-credential` | remove profile credential binding |
 
 ### Lock Recovery
 
@@ -269,7 +281,7 @@ Built-in skills are copied into the package and can be installed for supported a
 ### Built-in Skill Names
 
 - `splitwise-cli`
-- `splitwise-auth`
+- `splitwise-login`
 - `splitwise-expenses`
 - `splitwise-groups`
 - `splitwise-friends`

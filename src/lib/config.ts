@@ -10,12 +10,28 @@ const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
 const PROFILES_DIR = join(CONFIG_DIR, 'profiles');
 
 const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+const CREDENTIAL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+const DEFAULT_CREDENTIAL_NAME = 'default';
 
 export interface Config {
   accessToken?: string;
   consumerKey?: string;
   consumerSecret?: string;
   activeProfile?: string;
+  activeCredential?: string;
+  defaultCredential?: string;
+  credentials?: Record<string, Credential>;
+}
+
+export interface Credential {
+  accessToken?: string;
+  consumerKey?: string;
+  consumerSecret?: string;
+  userId?: number;
+  userName?: string;
+  lastUsedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Profile {
@@ -25,6 +41,7 @@ export interface Profile {
   deleteExpenses?: boolean;
   limitExpensesToGroupIds?: number[] | null;
   limitExpensesToFriendIds?: number[] | null;
+  credential?: string;
 }
 
 export type ResolvedProfile = {
@@ -117,6 +134,14 @@ function ensureValidProfileNameOrExit(name: string, cmd?: Command): void {
   }
 }
 
+function ensureValidCredentialNameOrExit(name: string, cmd?: Command): void {
+  const logger = createLogger(cmd, 'login');
+  if (!CREDENTIAL_NAME_RE.test(name)) {
+    logger.error(`Invalid credential name "${name}". Use letters, numbers, dot, underscore, or dash.`);
+    process.exit(1);
+  }
+}
+
 function restrictionFieldError(
   fieldName: 'limitExpensesToGroupIds' | 'limitExpensesToFriendIds',
   value: unknown,
@@ -158,6 +183,14 @@ function profileValidationErrors(name: string, profile: Profile): string[] {
   const friendsErr = restrictionFieldError('limitExpensesToFriendIds', profile.limitExpensesToFriendIds);
   if (friendsErr) errors.push(friendsErr);
 
+  if (profile.credential !== undefined) {
+    if (typeof profile.credential !== 'string' || profile.credential.trim().length === 0) {
+      errors.push('credential must be a non-empty string when provided.');
+    } else if (!CREDENTIAL_NAME_RE.test(profile.credential)) {
+      errors.push('credential name contains invalid characters.');
+    }
+  }
+
   if (errors.length > 0) {
     return errors.map((line) => `Profile "${name}": ${line}`);
   }
@@ -179,6 +212,78 @@ function ensureProfileExistsOrExit(name: string, cmd?: Command): void {
   const logger = createLogger(cmd, 'profiles');
   logger.error(`Profile "${name}" does not exist. Expected file: ${profilePath(name)}`);
   process.exit(1);
+}
+
+function credentialValidationErrors(name: string, credential: Credential): string[] {
+  const errors: string[] = [];
+  if (!credential.accessToken && !(credential.consumerKey && credential.consumerSecret)) {
+    errors.push(`Credential "${name}" must provide either accessToken or consumerKey+consumerSecret.`);
+  }
+  if (credential.accessToken && (credential.consumerKey || credential.consumerSecret)) {
+    errors.push(`Credential "${name}" cannot store token and oauth fields at the same time.`);
+  }
+  return errors;
+}
+
+function listCredentialNamesFromConfig(config: Config): string[] {
+  return Object.keys(config.credentials ?? {}).sort((a, b) => a.localeCompare(b));
+}
+
+function sanitizeConfigForSave(config: Config): Config {
+  const next: Config = { ...config };
+  const names = listCredentialNamesFromConfig(next);
+  if (names.length > 0) {
+    delete next.accessToken;
+    delete next.consumerKey;
+    delete next.consumerSecret;
+  }
+  return next;
+}
+
+function migrateLegacyCredentials(config: Config): Config {
+  const existingNames = listCredentialNamesFromConfig(config);
+  const hasLegacyToken = Boolean(config.accessToken);
+  const hasLegacyOAuth = Boolean(config.consumerKey && config.consumerSecret);
+  if (existingNames.length > 0 || (!hasLegacyToken && !hasLegacyOAuth)) {
+    return config;
+  }
+
+  const now = new Date().toISOString();
+  const migrated: Credential = hasLegacyToken
+    ? {
+      accessToken: config.accessToken,
+      createdAt: now,
+      updatedAt: now,
+    }
+    : {
+      consumerKey: config.consumerKey,
+      consumerSecret: config.consumerSecret,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+  return {
+    ...config,
+    credentials: {
+      [DEFAULT_CREDENTIAL_NAME]: migrated,
+    },
+    activeCredential: config.activeCredential ?? DEFAULT_CREDENTIAL_NAME,
+    defaultCredential: config.defaultCredential ?? DEFAULT_CREDENTIAL_NAME,
+  };
+}
+
+function normalizeCredentialPointers(config: Config): Config {
+  const names = listCredentialNamesFromConfig(config);
+  if (names.length === 0) return config;
+
+  const next: Config = { ...config };
+  if (!next.defaultCredential || !names.includes(next.defaultCredential)) {
+    next.defaultCredential = names.includes(DEFAULT_CREDENTIAL_NAME) ? DEFAULT_CREDENTIAL_NAME : names[0];
+  }
+  if (!next.activeCredential || !names.includes(next.activeCredential)) {
+    next.activeCredential = next.defaultCredential;
+  }
+  return next;
 }
 
 function restrictionAllows(list: number[] | null | undefined, id: number): boolean {
@@ -224,12 +329,238 @@ function ensureProfileSwitchAllowedOrExit(
 
 export function loadConfig(): Config {
   if (!existsSync(CONFIG_PATH)) return {};
-  return parseJson<Config>(CONFIG_PATH);
+  const parsed = parseJson<Config>(CONFIG_PATH);
+  return normalizeCredentialPointers(migrateLegacyCredentials(parsed));
 }
 
 export function saveConfig(config: Config): void {
   mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { mode: 0o600 });
+  const normalized = normalizeCredentialPointers(config);
+  const sanitized = sanitizeConfigForSave(normalized);
+  writeFileSync(CONFIG_PATH, JSON.stringify(sanitized, null, 2), { mode: 0o600 });
+}
+
+export function listCredentialNames(): string[] {
+  return listCredentialNamesFromConfig(loadConfig());
+}
+
+export function getCredential(name: string, cmd?: Command): Credential {
+  ensureValidCredentialNameOrExit(name, cmd);
+  const config = loadConfig();
+  const credential = config.credentials?.[name];
+  if (!credential) {
+    const logger = createLogger(cmd, 'login');
+    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    process.exit(1);
+  }
+  return credential;
+}
+
+export function setTokenCredential(name: string, accessToken: string, cmd?: Command): void {
+  ensureValidCredentialNameOrExit(name, cmd);
+  const config = loadConfig();
+  const now = new Date().toISOString();
+  const previous = config.credentials?.[name];
+  const next: Credential = {
+    accessToken,
+    userId: previous?.userId,
+    userName: previous?.userName,
+    lastUsedAt: previous?.lastUsedAt,
+    createdAt: previous?.createdAt ?? now,
+    updatedAt: now,
+  };
+  const errors = credentialValidationErrors(name, next);
+  if (errors.length > 0) {
+    const logger = createLogger(cmd, 'login');
+    logger.error(errors.join(' '));
+    process.exit(1);
+  }
+  config.credentials = { ...(config.credentials ?? {}), [name]: next };
+  config.activeCredential = config.activeCredential ?? name;
+  config.defaultCredential = config.defaultCredential ?? name;
+  saveConfig(config);
+}
+
+export function setOauthCredential(name: string, consumerKey: string, consumerSecret: string, cmd?: Command): void {
+  ensureValidCredentialNameOrExit(name, cmd);
+  const config = loadConfig();
+  const now = new Date().toISOString();
+  const previous = config.credentials?.[name];
+  const next: Credential = {
+    consumerKey,
+    consumerSecret,
+    userId: previous?.userId,
+    userName: previous?.userName,
+    lastUsedAt: previous?.lastUsedAt,
+    createdAt: previous?.createdAt ?? now,
+    updatedAt: now,
+  };
+  const errors = credentialValidationErrors(name, next);
+  if (errors.length > 0) {
+    const logger = createLogger(cmd, 'login');
+    logger.error(errors.join(' '));
+    process.exit(1);
+  }
+  config.credentials = { ...(config.credentials ?? {}), [name]: next };
+  config.activeCredential = config.activeCredential ?? name;
+  config.defaultCredential = config.defaultCredential ?? name;
+  saveConfig(config);
+}
+
+export function setActiveCredential(name: string, cmd?: Command): void {
+  ensureValidCredentialNameOrExit(name, cmd);
+  const config = loadConfig();
+  if (!config.credentials?.[name]) {
+    const logger = createLogger(cmd, 'login');
+    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    process.exit(1);
+  }
+  config.activeCredential = name;
+  saveConfig(config);
+}
+
+export function setDefaultCredential(name: string, cmd?: Command): void {
+  ensureValidCredentialNameOrExit(name, cmd);
+  const config = loadConfig();
+  if (!config.credentials?.[name]) {
+    const logger = createLogger(cmd, 'login');
+    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    process.exit(1);
+  }
+  config.defaultCredential = name;
+  saveConfig(config);
+}
+
+export function removeCredential(name: string, cmd?: Command): void {
+  ensureValidCredentialNameOrExit(name, cmd);
+  const config = loadConfig();
+  if (!config.credentials?.[name]) {
+    const logger = createLogger(cmd, 'login');
+    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    process.exit(1);
+  }
+
+  const nextCredentials = { ...config.credentials };
+  delete nextCredentials[name];
+  const remainingNames = Object.keys(nextCredentials).sort((a, b) => a.localeCompare(b));
+
+  config.credentials = nextCredentials;
+  if (remainingNames.length === 0) {
+    delete config.activeCredential;
+    delete config.defaultCredential;
+  } else {
+    if (config.activeCredential === name) {
+      config.activeCredential = remainingNames[0];
+    }
+    if (config.defaultCredential === name) {
+      config.defaultCredential = remainingNames[0];
+    }
+  }
+  saveConfig(config);
+}
+
+function resolveRequestedCredentialName(cmd?: Command): string | undefined {
+  return (cmd?.optsWithGlobals() as { credential?: string } | undefined)?.credential;
+}
+
+export function resolveCredentialName(cmd?: Command, explicitName?: string): string {
+  const config = loadConfig();
+  const requested = explicitName ?? resolveRequestedCredentialName(cmd);
+  if (requested) ensureValidCredentialNameOrExit(requested, cmd);
+
+  const profileCredential = resolveProfile(cmd).profile.credential;
+  const selected = resolveCredentialNameFromInputs({
+    requested,
+    profileCredential,
+    activeCredential: config.activeCredential,
+    defaultCredential: config.defaultCredential,
+  });
+
+  if (!selected) {
+    const logger = createLogger(cmd, 'login');
+    logger.error('Not logged in. Run splitwise-cli login token <token> first.');
+    process.exit(1);
+  }
+
+  ensureValidCredentialNameOrExit(selected, cmd);
+  if (!config.credentials?.[selected]) {
+    const logger = createLogger(cmd, 'login');
+    logger.error(`Credential "${selected}" does not exist in ${CONFIG_PATH}.`);
+    process.exit(1);
+  }
+
+  return selected;
+}
+
+export function resolveCredentialNameFromInputs(input: {
+  requested?: string;
+  profileCredential?: string;
+  activeCredential?: string;
+  defaultCredential?: string;
+}): string | null {
+  return input.requested
+    ?? input.profileCredential
+    ?? input.activeCredential
+    ?? input.defaultCredential
+    ?? null;
+}
+
+export function resolveCredential(cmd?: Command, explicitName?: string): { name: string; credential: Credential } {
+  const name = resolveCredentialName(cmd, explicitName);
+  const config = loadConfig();
+  const credential = config.credentials?.[name];
+  if (!credential) {
+    const logger = createLogger(cmd, 'login');
+    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    process.exit(1);
+  }
+  return { name, credential };
+}
+
+const usedCredentialNamesInProcess = new Set<string>();
+
+function markCredentialUsed(name: string): void {
+  if (usedCredentialNamesInProcess.has(name)) return;
+  usedCredentialNamesInProcess.add(name);
+
+  const config = loadConfig();
+  const credential = config.credentials?.[name];
+  if (!credential) return;
+
+  const now = new Date().toISOString();
+  config.credentials = {
+    ...(config.credentials ?? {}),
+    [name]: {
+      ...credential,
+      lastUsedAt: now,
+      updatedAt: now,
+    },
+  };
+  saveConfig(config);
+}
+
+export function setCredentialIdentity(name: string, userId: number, userName: string): void {
+  const config = loadConfig();
+  const credential = config.credentials?.[name];
+  if (!credential) return;
+  const now = new Date().toISOString();
+  config.credentials = {
+    ...(config.credentials ?? {}),
+    [name]: {
+      ...credential,
+      userId,
+      userName,
+      updatedAt: now,
+    },
+  };
+  saveConfig(config);
+}
+
+export function maskCredentialToken(credential: Credential): string {
+  const raw = credential.accessToken ?? credential.consumerKey ?? '';
+  if (raw.length === 0) return '';
+  if (raw.length <= 8) return `${raw.slice(0, 2)}****${raw.slice(-2)}`;
+  return `${raw.slice(0, 4)}****${raw.slice(-3)}`;
 }
 
 export function getConfigPath(): string {
@@ -340,6 +671,12 @@ export function validateSelectedProfileOrExit(cmd?: Command): void {
 
   const activeProfile = loadProfileFromDisk(activeName);
   const activeErrors = profileValidationErrors(activeName, activeProfile);
+  if (activeProfile.credential) {
+    const config = loadConfig();
+    if (!config.credentials?.[activeProfile.credential]) {
+      activeErrors.push(`Profile "${activeName}": credential "${activeProfile.credential}" does not exist.`);
+    }
+  }
   if (activeErrors.length > 0) {
     logger.error(activeErrors.join(' '));
     process.exit(1);
@@ -351,6 +688,12 @@ export function validateSelectedProfileOrExit(cmd?: Command): void {
     ensureProfileExistsOrExit(requested, cmd);
     const requestedProfile = loadProfileFromDisk(requested);
     const requestedErrors = profileValidationErrors(requested, requestedProfile);
+    if (requestedProfile.credential) {
+      const config = loadConfig();
+      if (!config.credentials?.[requestedProfile.credential]) {
+        requestedErrors.push(`Profile "${requested}": credential "${requestedProfile.credential}" does not exist.`);
+      }
+    }
     if (requestedErrors.length > 0) {
       logger.error(requestedErrors.join(' '));
       process.exit(1);
@@ -359,7 +702,7 @@ export function validateSelectedProfileOrExit(cmd?: Command): void {
   }
 }
 
-export function ensureAuthWritable(cmd?: Command): void {
+export function ensureLoginWritable(cmd?: Command): void {
   const logger = createLogger(cmd, 'profiles');
   const { activeName, activeProfile } = resolveProfile(cmd);
   if (!activeProfile.locked) return;
@@ -432,20 +775,29 @@ export function ensureExpenseOperationAllowed(
   process.exit(1);
 }
 
-export function getClient(cmd?: Command): Splitwise {
+export function getClient(cmd?: Command, explicitCredentialName?: string): Splitwise {
   const logger = createLogger(cmd, 'client');
   const hooks = createHttpHooks(logger);
-  const config = loadConfig();
-  if (config.accessToken) {
-    return new Splitwise({ accessToken: config.accessToken, hooks });
+  const { name, credential } = resolveCredential(cmd, explicitCredentialName);
+  const trackedHooks = {
+    ...hooks,
+    onResponse(event: ResponseHookEvent) {
+      hooks.onResponse(event);
+      if (event.status >= 200 && event.status < 300) {
+        markCredentialUsed(name);
+      }
+    },
+  };
+  if (credential.accessToken) {
+    return new Splitwise({ accessToken: credential.accessToken, hooks: trackedHooks });
   }
-  if (config.consumerKey && config.consumerSecret) {
+  if (credential.consumerKey && credential.consumerSecret) {
     return new Splitwise({
-      consumerKey: config.consumerKey,
-      consumerSecret: config.consumerSecret,
-      hooks,
+      consumerKey: credential.consumerKey,
+      consumerSecret: credential.consumerSecret,
+      hooks: trackedHooks,
     });
   }
-  logger.error('Not authenticated. Run splitwise-cli auth set-token <token> first.');
+  logger.error(`Credential "${name}" is incomplete. Run splitwise-cli login token <token> or splitwise-cli login oauth <consumerKey> <consumerSecret>.`);
   process.exit(1);
 }

@@ -74,9 +74,9 @@ const SKILL_RESOURCES: SkillResourceEntry[] = [
     resourceDir: 'splitwise-cli',
   },
   {
-    name: 'splitwise-auth',
-    description: 'Authentication setup and troubleshooting.',
-    resourceDir: 'splitwise-auth',
+    name: 'splitwise-login',
+    description: 'Login credential setup and troubleshooting.',
+    resourceDir: 'splitwise-login',
   },
   {
     name: 'splitwise-expenses',

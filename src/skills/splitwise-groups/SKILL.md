@@ -34,7 +34,7 @@ Use groups list to discover IDs, then groups get to inspect membership.
 ## Prerequisites
 
 ~~~bash
-splitwise-cli auth whoami
+splitwise-cli login whoami
 ~~~
 
 ## Typical Workflow
@@ -61,7 +61,7 @@ splitwise-cli expenses list --group <id> --from -30d
 | Problem | Cause | Fix |
 |---|---|---|
 | Group not found | Invalid ID | Re-run `groups list` and use returned ID |
-| Authentication error | Missing/invalid credentials | Run `splitwise-cli auth whoami` then re-authenticate |
+| Login error | Missing/invalid credentials | Run `splitwise-cli login whoami` then refresh credentials |
 
 ## Command Discovery
 
