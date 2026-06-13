@@ -54,6 +54,10 @@ export function addCredentialOption(cmd: Command): Command {
   return cmd.option('-c, --credential <name>', 'Use a credential by name');
 }
 
+export function addOfflineOption(cmd: Command): Command {
+  return cmd.option('--offline', 'Use cached local data only and forbid network access');
+}
+
 export function hasExplicitOutputOption(cmd: Command): boolean {
   const output = (cmd.optsWithGlobals() as { output?: string }).output;
   return output !== undefined && output !== null;

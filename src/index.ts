@@ -8,8 +8,9 @@ import { registerGroups } from './commands/groups.js';
 import { registerExpenses } from './commands/expenses.js';
 import { registerSkills } from './commands/skills.js';
 import { registerProfiles } from './commands/profiles.js';
+import { registerCache } from './commands/cache.js';
 import { loadConfig, maskCredentialToken, resolveCredentialName, resolveProfile, validateSelectedProfileOrExit } from './lib/config.js';
-import { addCredentialOption, addLoggingOptions, addProfileOption, createLogger } from './lib/output.js';
+import { addCredentialOption, addLoggingOptions, addOfflineOption, addProfileOption, createLogger } from './lib/output.js';
 
 const program = new Command();
 
@@ -21,6 +22,7 @@ program
 addLoggingOptions(program);
 addProfileOption(program);
 addCredentialOption(program);
+addOfflineOption(program);
 
 const argv = process.argv.slice(2);
 const asksForHelpOrVersion = argv.includes('-h') || argv.includes('--help') || argv.includes('-V') || argv.includes('--version');
@@ -40,6 +42,7 @@ registerGroups(program);
 registerExpenses(program);
 registerSkills(program);
 registerProfiles(program);
+registerCache(program);
 
 if (argv.length === 0) {
   try {

@@ -3,13 +3,18 @@ import { dump as yamlDump } from 'js-yaml';
 import { type Expense } from 'splitwise';
 import {
   getClient,
+  getCacheRootPath,
+  resolveCacheTarget,
+  resolveCredential,
+  resolveOfflineMode,
   ensureExpenseGroupAllowed,
   ensureExpenseFriendAllowed,
   resolveProfile,
 } from '../lib/config.js';
+import { findOfflineExpenseById, loadLatestFriends, loadLatestGroups, resolveOfflineExpenses } from '../lib/cache.js';
 import {
   addOutputOption, getFormat, formatName,
-  render, renderOne, renderEmptyList,
+  render, renderOne, renderEmptyList, renderTuiList,
   isTuiDefault, colorize, createTuiProgress, createLogger, writeTuiInfoSpacer,
   visualWidth, padStartVisual, padEndVisual,
   type OutputFormat,
@@ -107,11 +112,10 @@ export function registerExpenses(program: Command): void {
         involved?: string; payer?: string; query?: string;
       },
     ) {
-      const sw = getClient(this);
       const logger = createLogger(this, 'expenses');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
-      const { profile } = resolveProfile(this);
+      const { profile, name: profileName } = resolveProfile(this);
 
       // ── Parse --query and merge (explicit flags win) ──────────────────────
       if (opts.query) {
@@ -127,6 +131,227 @@ export function registerExpenses(program: Command): void {
           if (key === 'to')     opts.to     ??= val;
         }
       }
+
+      if (resolveOfflineMode(this)) {
+        const target = resolveCacheTarget(this);
+        const { credential } = resolveCredential(this);
+        const startedAt = Date.now();
+        const cachedGroups = loadLatestGroups(target, credential.userId, profileName);
+        const cachedFriends = loadLatestFriends(target, credential.userId, profileName);
+        const groupLookup = new Map<number, string>();
+        for (const group of cachedGroups) groupLookup.set(group.id, group.name);
+
+        const resolveOfflineUser = (label: string, value: string): number | undefined => {
+          if (value === '@me') return credential.userId;
+          const asNum = Number(value);
+          if (!Number.isNaN(asNum) && String(asNum) === value) return asNum;
+          const needle = value.toLowerCase();
+          const me = credential.userId && credential.userName
+            ? [{ id: credential.userId, firstName: credential.userName, lastName: null }]
+            : [];
+          const unique = [...new Map(
+            [...cachedFriends, ...me]
+              .filter((u) => formatName(u).toLowerCase().includes(needle))
+              .map((u) => [u.id, u]),
+          ).values()];
+
+          if (unique.length === 0) {
+            logger.warn(`Warning: no user matching "${value}" for ${label} - filter ignored.`);
+            return undefined;
+          }
+          if (unique.length > 1) {
+            logger.error(
+              `Ambiguous ${label} "${value}" — matches: ${unique.map((u) => `"${formatName(u)}"`).join(', ')}. Be more specific.`,
+            );
+            process.exit(1);
+          }
+          return unique[0].id;
+        };
+
+        let groupId: number | undefined;
+        if (opts.group !== undefined) {
+          const asNum = Number(opts.group);
+          if (!Number.isNaN(asNum) && String(asNum) === opts.group) {
+            ensureExpenseGroupAllowed(this, asNum, 'expenses list');
+            groupId = asNum;
+          } else {
+            const needle = opts.group.toLowerCase();
+            const matches = cachedGroups.filter((group) => group.name.toLowerCase().includes(needle));
+            if (matches.length === 0) {
+              logger.warn(`Warning: no group matching "${opts.group}" - returning empty list.`);
+              renderEmptyList(fmt);
+              return;
+            }
+            if (matches.length > 1) {
+              logger.error(
+                `Ambiguous group "${opts.group}" — matches: ${matches.map((group) => `"${group.name}"`).join(', ')}. Be more specific.`,
+              );
+              process.exit(1);
+            }
+            ensureExpenseGroupAllowed(this, matches[0].id, 'expenses list');
+            groupId = matches[0].id;
+          }
+        }
+
+        let friendId: number | undefined;
+        if (opts.friend !== undefined) {
+          const asNum = Number(opts.friend);
+          if (!Number.isNaN(asNum) && String(asNum) === opts.friend) {
+            ensureExpenseFriendAllowed(this, asNum, 'expenses list');
+            friendId = asNum;
+          } else {
+            const needle = opts.friend.toLowerCase();
+            const matches = cachedFriends.filter((friend) => formatName(friend).toLowerCase().includes(needle));
+            if (matches.length === 0) {
+              logger.warn(`Warning: no friend matching "${opts.friend}" - returning empty list.`);
+              renderEmptyList(fmt);
+              return;
+            }
+            if (matches.length > 1) {
+              logger.error(
+                `Ambiguous friend "${opts.friend}" — matches: ${matches.map((friend) => `"${formatName(friend)}"`).join(', ')}. Be more specific.`,
+              );
+              process.exit(1);
+            }
+            ensureExpenseFriendAllowed(this, matches[0].id, 'expenses list');
+            friendId = matches[0].id;
+          }
+        }
+
+        const datedAfter = opts.from ? parseDate(opts.from) : undefined;
+        const datedBefore = opts.to ? parseDate(opts.to) : undefined;
+        const involvedId = opts.involved !== undefined
+          ? resolveOfflineUser('--involved', opts.involved)
+          : undefined;
+        if (involvedId !== undefined) ensureExpenseFriendAllowed(this, involvedId, 'expenses list');
+
+        const payerId = (opts.mine ? '@me' : opts.payer) !== undefined
+          ? resolveOfflineUser('--payer', opts.mine ? '@me' : opts.payer!)
+          : undefined;
+        if (payerId !== undefined) ensureExpenseFriendAllowed(this, payerId, 'expenses list');
+
+        const offline = resolveOfflineExpenses(target, credential.userId, {
+          from: datedAfter,
+          to: datedBefore,
+          groupId,
+          friendId,
+        });
+        for (const warning of offline.warnings) logger.warn(warning);
+        for (const [groupKey, groupName] of Object.entries(offline.groupNamesById)) {
+          const cachedGroupId = Number(groupKey);
+          if (!Number.isNaN(cachedGroupId) && !groupLookup.has(cachedGroupId)) {
+            groupLookup.set(cachedGroupId, groupName);
+          }
+        }
+
+        const passesFilter = (e: Expense): boolean => {
+          if (profile.limitExpensesToGroupIds !== undefined && profile.limitExpensesToGroupIds !== null) {
+            if (e.groupId === null || !profile.limitExpensesToGroupIds.includes(e.groupId)) return false;
+          }
+          if (profile.limitExpensesToFriendIds !== undefined && profile.limitExpensesToFriendIds !== null) {
+            const participantIds = (e.users ?? []).map((u) => u.userId);
+            const hasAllowed = participantIds.some((id) => profile.limitExpensesToFriendIds!.includes(id));
+            if (!hasAllowed) return false;
+          }
+          if (involvedId !== undefined && !e.users?.some((u) => u.userId === involvedId)) return false;
+          if (payerId !== undefined && !e.users?.some((u) => u.userId === payerId && Number(u.paidShare) > 0)) return false;
+          return true;
+        };
+
+        const resolveGroup = (id: number | null) => id != null ? (groupLookup.get(id) ?? String(id)) : '';
+        const meIdForTui = credential.userId;
+        const rows = offline.expenses.filter(passesFilter);
+
+        const toTableRow = (e: Expense) => {
+          const payer = e.users?.find((u) => Number(u.paidShare) > 0);
+          let description = e.description;
+          if (e.payment) {
+            const payee = e.users?.find((u) => u.userId !== payer?.userId && Number(u.owedShare) > 0);
+            if (payee) description += ` → ${formatName(payee.user)}`;
+          }
+          const myEntry = meIdForTui !== undefined
+            ? e.users?.find((u) => u.userId === meIdForTui)
+            : undefined;
+          const myPaid = Number(myEntry?.paidShare ?? 0);
+          const myOwes = Number(myEntry?.owedShare ?? 0);
+          const net = myPaid - myOwes;
+          const share = myEntry ? `${Math.abs(net).toFixed(2)} ${e.currencyCode}` : '';
+          return {
+            id: e.id,
+            date: e.date ? new Date(e.date).toLocaleDateString() : '?',
+            group: normalizeDisplayWhitespace(resolveGroup(e.groupId)),
+            paidBy: payer ? formatName(payer.user) : '',
+            description,
+            cost: `${Number(e.cost).toFixed(2)} ${e.currencyCode}`,
+            category: e.category?.name ?? '',
+            share,
+          };
+        };
+
+        const toFullRow = (e: Expense) => {
+          const payer = e.users?.find((u) => Number(u.paidShare) > 0);
+          return {
+            id: e.id,
+            date: e.date,
+            description: e.description,
+            cost: e.cost,
+            currency: e.currencyCode,
+            categoryId: e.category?.id,
+            category: e.category?.name ?? '',
+            isPayment: e.payment,
+            notes: e.details || undefined,
+            paidById: payer?.userId,
+            paidBy: payer ? formatName(payer.user) : '',
+            groupId: e.groupId,
+            group: resolveGroup(e.groupId),
+            splits: (e.users ?? []).map((u) => ({
+              userId: u.userId,
+              name: formatName(u.user),
+              paid: u.paidShare,
+              owes: u.owedShare,
+            })),
+            createdAt: e.createdAt,
+            createdById: e.createdBy?.id,
+            createdByName: formatName(e.createdBy),
+            updatedAt: e.updatedAt,
+            updatedById: e.updatedBy?.id,
+            updatedByName: formatName(e.updatedBy),
+            deletedAt: e.deletedAt,
+            deletedById: e.deletedBy?.id,
+            deletedByName: formatName(e.deletedBy),
+            comments: e.comments?.map((c) => ({
+              id: c.id,
+              content: c.content,
+              author: formatName(c.user),
+              createdAt: c.createdAt,
+            })),
+          };
+        };
+
+        if (rows.length === 0) {
+          renderEmptyList(fmt);
+          return;
+        }
+
+        if (tuiMode && fmt === 'table') {
+          renderTuiList(rows.map(toTableRow), {
+            intro: `Showing expenses from ${datedAfter ?? 'cache-start'} to ${datedBefore ?? 'cache-end'}`,
+            source: getCacheRootPath(target),
+            startedAt,
+            logger,
+          });
+          return;
+        }
+
+        if (fmt === 'table') {
+          render(rows.map(toTableRow), fmt);
+        } else {
+          render(rows.map(toFullRow), fmt);
+        }
+        return;
+      }
+
+      const sw = getClient(this);
 
       // ── Resolve dates ─────────────────────────────────────────────────────
       const datedAfter  = opts.from ? parseDate(opts.from) : undefined;
@@ -587,10 +812,103 @@ export function registerExpenses(program: Command): void {
   addOutputOption(expenses.command('get <id>'))
     .description('Get details for an expense')
     .action(async function (this: Command, id: string) {
-      const sw = getClient(this);
       const logger = createLogger(this, 'expenses');
       const fmt: OutputFormat = getFormat(this);
       const tuiMode = isTuiDefault(this);
+
+      if (resolveOfflineMode(this)) {
+        const target = resolveCacheTarget(this);
+        const { credential } = resolveCredential(this);
+        const cached = findOfflineExpenseById(target, credential.userId, Number(id));
+        if (!cached) {
+          logger.error(`Expense ${id} was not found in cached data at ${getCacheRootPath(target)}.`);
+          process.exit(1);
+        }
+        const e = cached.expense;
+        const comments = cached.comments.map((c) => ({
+          id: c.id,
+          content: c.content,
+          author: formatName(c.user),
+          createdAt: c.createdAt,
+        }));
+
+        if (e.groupId !== null) ensureExpenseGroupAllowed(this, e.groupId, 'expenses get');
+
+        if (fmt === 'table') {
+          renderOne(
+            {
+              id: e.id,
+              description: e.description ?? '',
+              cost: `${e.cost} ${e.currencyCode}`,
+              category: e.category?.name ?? '',
+              isPayment: String(e.payment),
+              date: e.date ?? '',
+              ...(e.details ? { notes: e.details } : {}),
+              createdAt: e.createdAt,
+              createdBy: formatName(e.createdBy),
+              updatedAt: e.updatedAt ?? '',
+              updatedBy: formatName(e.updatedBy),
+            },
+            fmt,
+            { tuiMode },
+          );
+          if (e.users && e.users.length > 0) {
+            if (tuiMode) writeTuiInfoSpacer(true);
+            logger.info('Shares:');
+            if (tuiMode) process.stdout.write('\n');
+            console.table(
+              e.users.map((u) => ({
+                name: formatName(u.user),
+                paid: u.paidShare,
+                owes: u.owedShare,
+              })),
+            );
+            if (tuiMode) process.stdout.write('\n');
+          }
+          if (comments.length > 0) {
+            if (tuiMode) writeTuiInfoSpacer(true);
+            logger.info('Comments:');
+            if (tuiMode) process.stdout.write('\n');
+            console.table(comments);
+            if (tuiMode) process.stdout.write('\n');
+          }
+        } else {
+          render(
+            [
+              {
+                id: e.id,
+                description: e.description ?? '',
+                cost: e.cost,
+                currency: e.currencyCode,
+                categoryId: e.category?.id,
+                category: e.category?.name ?? '',
+                isPayment: e.payment,
+                date: e.date ?? '',
+                notes: e.details || undefined,
+                createdAt: e.createdAt,
+                createdById: e.createdBy?.id,
+                createdByName: formatName(e.createdBy),
+                updatedAt: e.updatedAt,
+                updatedById: e.updatedBy?.id,
+                updatedByName: formatName(e.updatedBy),
+                deletedAt: e.deletedAt,
+                deletedById: e.deletedBy?.id,
+                deletedByName: formatName(e.deletedBy),
+                shares: e.users?.map((u) => ({
+                  name: formatName(u.user),
+                  paid: u.paidShare,
+                  owes: u.owedShare,
+                })) ?? [],
+                comments,
+              },
+            ],
+            fmt,
+          );
+        }
+        return;
+      }
+
+      const sw = getClient(this);
       if (tuiMode) {
         writeTuiInfoSpacer(true);
         logger.info(`Showing expense details for ${id}`);

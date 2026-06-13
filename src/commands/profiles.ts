@@ -37,6 +37,9 @@ type MutableProfileOptions = {
   clearExpenseFriendLimit?: boolean;
   profileCredential?: string;
   clearProfileCredential?: boolean;
+  offlineEnabled?: string;
+  preferredCacheTarget?: string;
+  clearPreferredCacheTarget?: boolean;
 };
 
 function parseBoolInput(field: string, value: string, logger: ReturnType<typeof createLogger>): boolean {
@@ -171,6 +174,7 @@ async function applyMutableOptions(
   if (options.createExpenses !== undefined) next.createExpenses = parseBoolInput('--create-expenses', options.createExpenses, logger);
   if (options.updateExpenses !== undefined) next.updateExpenses = parseBoolInput('--update-expenses', options.updateExpenses, logger);
   if (options.deleteExpenses !== undefined) next.deleteExpenses = parseBoolInput('--delete-expenses', options.deleteExpenses, logger);
+  if (options.offlineEnabled !== undefined) next.offlineEnabled = parseBoolInput('--offline-enabled', options.offlineEnabled, logger);
 
   if (options.clearExpenseGroupLimit) {
     next.limitExpensesToGroupIds = null;
@@ -184,6 +188,10 @@ async function applyMutableOptions(
     delete next.credential;
   }
 
+  if (options.clearPreferredCacheTarget) {
+    delete next.preferredCacheTarget;
+  }
+
   if (options.profileCredential !== undefined) {
     const name = options.profileCredential.trim();
     const credentials = new Set(listCredentialNames());
@@ -192,6 +200,15 @@ async function applyMutableOptions(
       process.exit(1);
     }
     next.credential = name;
+  }
+
+  if (options.preferredCacheTarget !== undefined) {
+    const value = options.preferredCacheTarget.trim().toLowerCase();
+    if (value !== 'local' && value !== 'user' && value !== 'global') {
+      logger.error('--preferred-cache-target must be one of: local, user, global.');
+      process.exit(1);
+    }
+    next.preferredCacheTarget = value;
   }
 
   if (options.limitExpensesToGroups !== undefined) {
@@ -221,12 +238,15 @@ function attachMutableOptions(cmd: Command): Command {
     .option('--create-expenses <yes|no>', 'Allow creating expenses via API')
     .option('--update-expenses <yes|no>', 'Allow updating expenses via API')
     .option('--delete-expenses <yes|no>', 'Allow deleting expenses via API')
+    .option('--offline-enabled <yes|no>', 'Enable offline mode by default for this profile')
     .option('--limit-expenses-to-groups <items>', 'Limit expenses scope to group ids or names (comma-separated). Use none for empty list, null for unrestricted')
     .option('--limit-expenses-to-friends <items>', 'Limit expenses scope to friend ids or names (comma-separated). Use none for empty list, null for unrestricted')
     .option('--clear-expense-group-limit', 'Set expense group scope to unrestricted (null)')
     .option('--clear-expense-friend-limit', 'Set expense friend scope to unrestricted (null)')
     .option('--profile-credential <name>', 'Bind this profile to a credential name')
-    .option('--clear-profile-credential', 'Remove bound profile credential');
+    .option('--clear-profile-credential', 'Remove bound profile credential')
+    .option('--preferred-cache-target <target>', 'Preferred cache target: local | user | global')
+    .option('--clear-preferred-cache-target', 'Clear the preferred cache target');
 }
 
 export function registerProfiles(program: Command): void {
@@ -247,6 +267,8 @@ export function registerProfiles(program: Command): void {
           active: name === active ? 'yes' : 'no',
           credential: profile.credential ?? '',
           locked: profile.locked ? 'yes' : 'no',
+          offlineEnabled: profile.offlineEnabled ? 'yes' : 'no',
+          preferredCacheTarget: profile.preferredCacheTarget ?? '',
           createExpenses: profile.createExpenses ?? true,
           updateExpenses: profile.updateExpenses ?? true,
           deleteExpenses: profile.deleteExpenses ?? true,
@@ -282,6 +304,8 @@ export function registerProfiles(program: Command): void {
           name,
           credential: profile.credential ?? null,
           locked: profile.locked ?? false,
+          offlineEnabled: profile.offlineEnabled ?? false,
+          preferredCacheTarget: profile.preferredCacheTarget ?? null,
           createExpenses: profile.createExpenses,
           updateExpenses: profile.updateExpenses,
           deleteExpenses: profile.deleteExpenses,

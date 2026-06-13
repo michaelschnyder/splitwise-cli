@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { getClient } from '../lib/config.js';
+import { getClient, resolveCacheTarget, resolveCredential, resolveOfflineMode, resolveProfile, getCacheRootPath } from '../lib/config.js';
+import { loadLatestFriends } from '../lib/cache.js';
 import {
   addOutputOption, getFormat, formatName, render, renderTuiList,
   isTuiDefault, createTuiProgress, createLogger,
@@ -11,11 +12,47 @@ export function registerFriends(program: Command): void {
   addOutputOption(friends.command('list'))
     .description('List friends and balances')
     .action(async function (this: Command) {
-      const sw = getClient(this);
       const logger = createLogger(this, 'friends');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
       const startedAt = Date.now();
+
+      if (resolveOfflineMode(this)) {
+        const target = resolveCacheTarget(this);
+        const profileName = resolveProfile(this).name;
+        const credential = resolveCredential(this).credential;
+        const list = loadLatestFriends(target, credential.userId, profileName);
+        if (list.length === 0) {
+          logger.error(`No cached friends data found in ${getCacheRootPath(target)} for offline mode.`);
+          process.exit(1);
+        }
+
+        const rows = list.map((f) => {
+          const balances = f.balance ?? [];
+          return {
+            id: f.id,
+            name: formatName(f),
+            balance: balances.length === 0
+              ? 'settled up'
+              : balances.map((b) => `${b.amount} ${b.currencyCode}`).join(', '),
+          };
+        });
+
+        if (tuiMode && fmt === 'table') {
+          renderTuiList(rows, {
+            intro: 'Showing friends and balances',
+            source: getCacheRootPath(target),
+            startedAt,
+            logger,
+          });
+          return;
+        }
+
+        render(rows, fmt);
+        return;
+      }
+
+      const sw = getClient(this);
       const progress = createTuiProgress(tuiMode);
       let list;
       progress.start('Fetching friends...');

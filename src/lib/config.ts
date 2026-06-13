@@ -13,6 +13,8 @@ const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const CREDENTIAL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const DEFAULT_CREDENTIAL_NAME = 'default';
 
+export type CacheTarget = 'local' | 'user' | 'global';
+
 export interface Config {
   accessToken?: string;
   consumerKey?: string;
@@ -42,6 +44,8 @@ export interface Profile {
   limitExpensesToGroupIds?: number[] | null;
   limitExpensesToFriendIds?: number[] | null;
   credential?: string;
+  offlineEnabled?: boolean;
+  preferredCacheTarget?: CacheTarget;
 }
 
 export type ResolvedProfile = {
@@ -170,6 +174,7 @@ function profileValidationErrors(name: string, profile: Profile): string[] {
     ['createExpenses', profile.createExpenses],
     ['updateExpenses', profile.updateExpenses],
     ['deleteExpenses', profile.deleteExpenses],
+    ['offlineEnabled', profile.offlineEnabled],
   ];
 
   for (const [field, value] of checks) {
@@ -188,6 +193,12 @@ function profileValidationErrors(name: string, profile: Profile): string[] {
       errors.push('credential must be a non-empty string when provided.');
     } else if (!CREDENTIAL_NAME_RE.test(profile.credential)) {
       errors.push('credential name contains invalid characters.');
+    }
+  }
+
+  if (profile.preferredCacheTarget !== undefined) {
+    if (!['local', 'user', 'global'].includes(profile.preferredCacheTarget)) {
+      errors.push('preferredCacheTarget must be one of: local, user, global.');
     }
   }
 
@@ -575,6 +586,72 @@ export function getProfilesDirPath(): string {
   return PROFILES_DIR;
 }
 
+export function resolveEffectiveOffline(input: {
+  requestedOffline?: boolean;
+  profileOfflineEnabled?: boolean;
+}): boolean {
+  if (input.requestedOffline === true) return true;
+  return input.profileOfflineEnabled === true;
+}
+
+export function resolveEffectiveCacheTarget(input: {
+  requestedTarget?: string;
+  profilePreferredTarget?: CacheTarget;
+}): CacheTarget {
+  if (input.requestedTarget === 'local' || input.requestedTarget === 'user' || input.requestedTarget === 'global') {
+    return input.requestedTarget;
+  }
+  if (input.profilePreferredTarget) return input.profilePreferredTarget;
+  return 'local';
+}
+
+export function resolveOfflineMode(cmd?: Command): boolean {
+  const requestedOffline = (cmd?.optsWithGlobals() as { offline?: boolean } | undefined)?.offline;
+  const { profile } = resolveProfile(cmd);
+  return resolveEffectiveOffline({
+    requestedOffline,
+    profileOfflineEnabled: profile.offlineEnabled,
+  });
+}
+
+export function getLocalCacheRootPath(): string {
+  return join(process.cwd(), '.splitwise');
+}
+
+export function getUserCacheRootPath(): string {
+  return join(CONFIG_DIR, 'cache');
+}
+
+export function getGlobalCacheRootPath(): string {
+  return process.env.APPDATA
+    ? join(process.env.APPDATA, 'splitwise-cli')
+    : join(CONFIG_DIR, 'cache-global');
+}
+
+export function getCacheRootPath(target: CacheTarget): string {
+  if (target === 'local') return getLocalCacheRootPath();
+  if (target === 'user') return getUserCacheRootPath();
+  return getGlobalCacheRootPath();
+}
+
+export function getCacheManifestPath(target: CacheTarget): string {
+  return join(getCacheRootPath(target), 'manifest.json');
+}
+
+export function ensureCacheRoot(target: CacheTarget): string {
+  const root = getCacheRootPath(target);
+  mkdirSync(root, { recursive: true });
+  return root;
+}
+
+export function resolveCacheTarget(cmd?: Command, explicitTarget?: string): CacheTarget {
+  const { profile } = resolveProfile(cmd);
+  return resolveEffectiveCacheTarget({
+    requestedTarget: explicitTarget,
+    profilePreferredTarget: profile.preferredCacheTarget,
+  });
+}
+
 export function getProfilePath(name: string): string {
   return profilePath(name);
 }
@@ -777,6 +854,10 @@ export function ensureExpenseOperationAllowed(
 
 export function getClient(cmd?: Command, explicitCredentialName?: string): Splitwise {
   const logger = createLogger(cmd, 'client');
+  if (resolveOfflineMode(cmd)) {
+    logger.error('Offline mode is active. This command cannot contact Splitwise. Export data first with the cache feature or rerun without --offline.');
+    process.exit(1);
+  }
   const hooks = createHttpHooks(logger);
   const { name, credential } = resolveCredential(cmd, explicitCredentialName);
   const trackedHooks = {
