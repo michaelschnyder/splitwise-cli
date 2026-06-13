@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { loadConfig, saveConfig, getClient } from '../lib/config.js';
+import { loadConfig, saveConfig, getClient, ensureAuthWritable } from '../lib/config.js';
 import {
   addOutputOption, getFormat, formatName, renderOne,
   isTuiDefault, colorize, createTuiProgress, createLogger, writeTuiInfoSpacer,
@@ -11,8 +11,9 @@ export function registerAuth(program: Command): void {
   auth
     .command('set-token <token>')
     .description('Save a pre-obtained Splitwise access token')
-    .action((token: string) => {
-      const logger = createLogger(undefined, 'auth');
+    .action(function (this: Command, token: string) {
+      ensureAuthWritable(this);
+      const logger = createLogger(this, 'auth');
       const config = loadConfig();
       config.accessToken = token;
       delete config.consumerKey;
@@ -24,8 +25,9 @@ export function registerAuth(program: Command): void {
   auth
     .command('set-oauth <consumerKey> <consumerSecret>')
     .description('Save OAuth consumer key and secret (Client Credentials flow)')
-    .action((consumerKey: string, consumerSecret: string) => {
-      const logger = createLogger(undefined, 'auth');
+    .action(function (this: Command, consumerKey: string, consumerSecret: string) {
+      ensureAuthWritable(this);
+      const logger = createLogger(this, 'auth');
       const config = loadConfig();
       config.consumerKey = consumerKey;
       config.consumerSecret = consumerSecret;

@@ -46,6 +46,15 @@ export function addLoggingOptions(cmd: Command): Command {
     );
 }
 
+export function addProfileOption(cmd: Command): Command {
+  return cmd.option('-p, --profile <name>', 'Use a profile by name');
+}
+
+export function hasExplicitOutputOption(cmd: Command): boolean {
+  const output = (cmd.optsWithGlobals() as { output?: string }).output;
+  return output !== undefined && output !== null;
+}
+
 export function getFormat(cmd: Command): OutputFormat {
   const fmt = (cmd.optsWithGlobals().output as string) ?? 'table';
   if (!['table', 'json', 'yaml'].includes(fmt)) {

@@ -93,6 +93,11 @@ const SKILL_RESOURCES: SkillResourceEntry[] = [
     description: 'Friend and balance exploration.',
     resourceDir: 'splitwise-friends',
   },
+  {
+    name: 'splitwise-profiles',
+    description: 'Profile restrictions, locking, and selection workflows.',
+    resourceDir: 'splitwise-profiles',
+  },
 ];
 
 const SKILLS_ROOT = findSkillsRoot();

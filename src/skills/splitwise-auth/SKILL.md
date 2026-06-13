@@ -51,6 +51,12 @@ splitwise-cli friends list
 - Setting a token removes stored OAuth key/secret.
 - Setting OAuth credentials removes stored token.
 
+## Profiles Interaction
+
+- Credentials are global and not stored inside profiles.
+- If the active profile is locked, `auth set-token` and `auth set-oauth` are blocked.
+- Lock recovery is manual by editing/removing the locked profile file path printed by the CLI.
+
 ## Storage
 
 Credentials are stored in:

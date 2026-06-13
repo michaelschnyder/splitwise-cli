@@ -1,7 +1,12 @@
 import { Command } from 'commander';
 import { dump as yamlDump } from 'js-yaml';
 import { type Expense } from 'splitwise';
-import { getClient } from '../lib/config.js';
+import {
+  getClient,
+  ensureExpenseGroupAllowed,
+  ensureExpenseFriendAllowed,
+  resolveProfile,
+} from '../lib/config.js';
 import {
   addOutputOption, getFormat, formatName,
   render, renderOne, renderEmptyList,
@@ -106,6 +111,7 @@ export function registerExpenses(program: Command): void {
       const logger = createLogger(this, 'expenses');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
+      const { profile } = resolveProfile(this);
 
       // ── Parse --query and merge (explicit flags win) ──────────────────────
       if (opts.query) {
@@ -177,6 +183,7 @@ export function registerExpenses(program: Command): void {
       if (opts.group !== undefined) {
         const asNum = Number(opts.group);
         if (!isNaN(asNum) && String(asNum) === opts.group) {
+          ensureExpenseGroupAllowed(this, asNum, 'expenses list');
           groupId = asNum;
         } else {
           const needle = opts.group.toLowerCase();
@@ -192,6 +199,7 @@ export function registerExpenses(program: Command): void {
             );
             process.exit(1);
           }
+          ensureExpenseGroupAllowed(this, matches[0].id, 'expenses list');
           groupId = matches[0].id;
         }
       }
@@ -202,6 +210,7 @@ export function registerExpenses(program: Command): void {
       if (opts.friend !== undefined) {
         const asNum = Number(opts.friend);
         if (!isNaN(asNum) && String(asNum) === opts.friend) {
+          ensureExpenseFriendAllowed(this, asNum, 'expenses list');
           friendId = asNum;
         } else {
           const needle = opts.friend.toLowerCase();
@@ -220,6 +229,7 @@ export function registerExpenses(program: Command): void {
             );
             process.exit(1);
           }
+          ensureExpenseFriendAllowed(this, matches[0].id, 'expenses list');
           friendId = matches[0].id;
         }
       }
@@ -228,14 +238,24 @@ export function registerExpenses(program: Command): void {
       const involvedId = opts.involved !== undefined
         ? await resolveUser('--involved', opts.involved)
         : undefined;
+      if (involvedId !== undefined) ensureExpenseFriendAllowed(this, involvedId, 'expenses list');
 
       const payerId = (opts.mine ? '@me' : opts.payer) !== undefined
         ? await resolveUser('--payer', opts.mine ? '@me' : opts.payer!)
         : undefined;
+      if (payerId !== undefined) ensureExpenseFriendAllowed(this, payerId, 'expenses list');
 
       const hasLocalFilter = involvedId !== undefined || payerId !== undefined;
 
       const passesFilter = (e: Expense): boolean => {
+        if (profile.limitExpensesToGroupIds !== undefined && profile.limitExpensesToGroupIds !== null) {
+          if (e.groupId === null || !profile.limitExpensesToGroupIds.includes(e.groupId)) return false;
+        }
+        if (profile.limitExpensesToFriendIds !== undefined && profile.limitExpensesToFriendIds !== null) {
+          const participantIds = (e.users ?? []).map((u) => u.userId);
+          const hasAllowed = participantIds.some((id) => profile.limitExpensesToFriendIds!.includes(id));
+          if (!hasAllowed) return false;
+        }
         if (involvedId !== undefined &&
             !e.users?.some((u) => u.userId === involvedId)) return false;
         if (payerId !== undefined &&
@@ -596,6 +616,8 @@ export function registerExpenses(program: Command): void {
         author: formatName(c.user),
         createdAt: c.createdAt,
       }));
+
+      if (e.groupId !== null) ensureExpenseGroupAllowed(this, e.groupId, 'expenses get');
 
       if (fmt === 'table') {
         renderOne(

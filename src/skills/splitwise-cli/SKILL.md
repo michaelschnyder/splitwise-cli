@@ -1,6 +1,6 @@
 ---
 name: splitwise-cli
-description: Splitwise CLI command reference for auth, friends, groups, and expenses.
+description: Splitwise CLI command reference for auth, profiles, friends, groups, and expenses.
 metadata:
   version: "1.0.1"
   author: splitwise-cli
@@ -17,6 +17,7 @@ Use this skill when you need command-driven access to Splitwise data from a term
 | Task | Command |
 |------|---------|
 | Check current user | `splitwise-cli auth whoami` |
+| List profiles | `splitwise-cli profiles list` |
 | List friends and balances | `splitwise-cli friends list` |
 | List groups | `splitwise-cli groups list` |
 | Get one group | `splitwise-cli groups get <id>` |
@@ -51,6 +52,7 @@ splitwise-cli expenses list --from -30d --all
 ## Command Groups
 
 - auth: configure token/oauth credentials and verify current user.
+- profiles: manage restrictions, active selection, and one-way lock behavior.
 - friends: list friends and balances.
 - groups: list groups or fetch group details.
 - expenses: query recent expenses with server-side filters and output formats.

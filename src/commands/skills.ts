@@ -71,8 +71,8 @@ export function registerSkills(program: Command): void {
     .command('path [platform]')
     .description('Print install paths for one platform, all platforms, or auto-detected platform')
     .option('--project', 'Use project-local scope instead of user-global scope')
-    .action((platform: string | undefined, opts: { project?: boolean }) => {
-      const logger = createLogger(undefined, 'skills');
+    .action(function (this: Command, platform: string | undefined, opts: { project?: boolean }) {
+      const logger = createLogger(this, 'skills');
       const { root } = projectRootOrCwd();
       const userScope = !opts.project;
       const scopeLabel = userScope ? 'user' : 'project';
@@ -98,11 +98,12 @@ export function registerSkills(program: Command): void {
     .option('--dir <path>', 'Override output directory (writes <dir>/<skill>/SKILL.md)')
     .option('--project', 'Use project-local scope instead of user-global scope')
     .option('--force', 'Overwrite existing SKILL.md files')
-    .action((
+    .action(function (
+      this: Command,
       platform: string | undefined,
       opts: { name?: string; dir?: string; project?: boolean; force?: boolean },
-    ) => {
-      const logger = createLogger(undefined, 'skills');
+    ) {
+      const logger = createLogger(this, 'skills');
       const { root } = projectRootOrCwd();
       const userScope = !opts.project;
       const selected = opts.name
@@ -148,8 +149,8 @@ export function registerSkills(program: Command): void {
     .option('--name <name>', 'Create only one skill by name')
     .option('--dir <path>', 'Destination directory for generated skills', 'skills')
     .option('--force', 'Overwrite existing SKILL.md files')
-    .action((opts: { name?: string; dir: string; force?: boolean }) => {
-      const logger = createLogger(undefined, 'skills');
+    .action(function (this: Command, opts: { name?: string; dir: string; force?: boolean }) {
+      const logger = createLogger(this, 'skills');
       const selected = opts.name
         ? SKILLS.filter((s) => s.name === opts.name)
         : SKILLS;

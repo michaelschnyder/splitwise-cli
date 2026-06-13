@@ -33,7 +33,7 @@ splitwise-cli groups list
 splitwise-cli expenses list --from -30d --all
 ```
 
-Credentials are stored at `~/.splitwise-cli/config.json`.
+Configuration is stored under `~/.splitwise-cli/`.
 
 ## Supported Areas
 
@@ -41,10 +41,17 @@ Credentials are stored at `~/.splitwise-cli/config.json`.
 |---|---|---|---|
 | Auth | Configure credentials and inspect active user | `set-token`, `set-oauth`, `whoami` | [Auth](#auth) |
 | Friends | List friends and balances | `list` | [Friends](#friends) |
+| Groups | List groups and fetch group details | `list`, `get` | [Groups](#groups) |
 | Expenses | Query expenses with date/person/group filters | `list`, `get` | [Expenses](#expenses) |
+| Profiles | Manage profile restrictions, active profile, and lock state | `list`, `show`, `create`, `edit`, `select`, `remove`, `validate`, `lock` | [Profiles](#profiles) |
 | Skills | List/install/create assistant skill files | `list`, `path`, `install`, `create` | [Skills](#skills) |
 
 For global log flags, output streams, and debug behavior, see [Console Logging](#console-logging).
+
+Global profile selection:
+
+- `-p, --profile <name>` selects a profile for the current command.
+- If the active profile is locked, switching profiles is blocked until the profile file is edited manually.
 
 ## Output Formats
 
@@ -125,6 +132,15 @@ Id         Name            Balance
 ]
 ```
 
+## Groups
+
+### Commands
+
+```bash
+splitwise-cli groups list
+splitwise-cli groups get <groupId>
+```
+
 ## Expenses
 
 ### Commands
@@ -200,6 +216,87 @@ ID         Date         Group/Friend   Paid By       Description              Co
 ]
 ```
 
+## Profiles
+
+Profiles control what the CLI is allowed to do. Credentials are not part of profiles.
+
+Restriction semantics:
+
+- `limitExpensesToGroupIds` / `limitExpensesToFriendIds` omitted or `null`: unrestricted
+- `[]`: nobody allowed
+- `[id1, id2, ...]`: only listed ids are allowed
+
+Lock behavior:
+
+- `profiles lock` is one-way from the CLI (no unlock command)
+- lock confirmation is interactive in default TUI mode
+- in explicit output mode, pass `--yes` to confirm lock
+- when locked, auth updates and profile switching are blocked
+
+### Commands
+
+```bash
+splitwise-cli profiles list
+splitwise-cli profiles show default
+splitwise-cli profiles create work --create-expenses no
+splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345
+splitwise-cli profiles select work
+splitwise-cli profiles validate work
+splitwise-cli profiles lock work
+```
+
+### Core Options (`profiles create|edit`)
+
+| Flag | Description |
+|---|---|
+| `--create-expenses <yes|no>` | allow/disallow creating expenses |
+| `--update-expenses <yes|no>` | allow/disallow updating expenses |
+| `--delete-expenses <yes|no>` | allow/disallow deleting expenses |
+| `--limit-expenses-to-groups <items>` | comma-separated ids/names, `none` for empty list, `null` for unrestricted |
+| `--limit-expenses-to-friends <items>` | comma-separated ids/names, `none` for empty list, `null` for unrestricted |
+| `--clear-expense-group-limit` | set expense group limit to unrestricted (`null`) |
+| `--clear-expense-friend-limit` | set expense friend limit to unrestricted (`null`) |
+
+### Lock Recovery
+
+When a profile is locked and an operation is blocked, the CLI prints the exact profile file path.
+To recover, edit that file and set `"locked": false`, or remove the file manually.
+
+## Skills
+
+Built-in skills are copied into the package and can be installed for supported assistants.
+
+### Built-in Skill Names
+
+- `splitwise-cli`
+- `splitwise-auth`
+- `splitwise-expenses`
+- `splitwise-groups`
+- `splitwise-friends`
+- `splitwise-profiles`
+
+### Commands
+
+```bash
+splitwise-cli skills list
+splitwise-cli skills path [platform]
+splitwise-cli skills install [platform]
+splitwise-cli skills create
+```
+
+Supported platform values: `claude`, `cursor`, `codex`, `opencode`, `windsurf`, `gemini`, `pi`, `all`.
+
+### Example Response (`skills list -o yaml`)
+
+```yaml
+- name: splitwise-cli
+  type: skill
+  description: Top-level splitwise-cli command reference and workflow.
+- name: splitwise-expenses
+  type: skill
+  description: Expense listing filters, date parsing, and output behavior.
+```
+
 ## Console Logging
 
 Logging and progress output are powered by `consola`.
@@ -245,47 +342,6 @@ splitwise-cli friends list --log info
 splitwise-cli expenses list -vv --from -30d
 SW_DEBUG=true splitwise-cli groups get 12345 -o json
 ```
-
-## Skills
-
-Built-in skills are copied into the package and can be installed for supported assistants.
-
-### Built-in Skill Names
-
-- `splitwise-cli`
-- `splitwise-auth`
-- `splitwise-expenses`
-- `splitwise-groups`
-- `splitwise-friends`
-
-### Commands
-
-```bash
-splitwise-cli skills list
-splitwise-cli skills path [platform]
-splitwise-cli skills install [platform]
-splitwise-cli skills create
-```
-
-Supported platform values: `claude`, `cursor`, `codex`, `opencode`, `windsurf`, `gemini`, `pi`, `all`.
-
-### Example Response (`skills list -o yaml`)
-
-```yaml
-- name: splitwise-cli
-  type: skill
-  description: Top-level splitwise-cli command reference and workflow.
-- name: splitwise-expenses
-  type: skill
-  description: Expense listing filters, date parsing, and output behavior.
-```
-
-## Other Commands
-
-Groups are also supported with:
-
-- `splitwise-cli groups list`
-- `splitwise-cli groups get <groupId>`
 
 ## Development
 
