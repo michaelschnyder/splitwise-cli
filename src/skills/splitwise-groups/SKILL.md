@@ -45,6 +45,10 @@ splitwise-cli groups get <id>
 splitwise-cli expenses list --group <id> --from -30d
 ~~~
 
+## Output Notes
+
+- In implicit TUI mode (no `-o`), groups list output includes one intro line, a readable title-cased table, and one summary footer line with items/time/source.
+
 ## Failure Handling
 
 | Problem | Cause | Fix |

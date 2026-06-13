@@ -17,7 +17,7 @@ export type OutputFormat = 'table' | 'json' | 'yaml';
 
 /** Attach -o / --output to any command that produces structured output. */
 export function addOutputOption(cmd: Command): Command {
-  return cmd.option('-o, --output <format>', 'Output format: table | json | yaml', 'table');
+  return cmd.option('-o, --output <format>', 'Output format: table | json | yaml');
 }
 
 export function getFormat(cmd: Command): OutputFormat {
@@ -27,6 +27,66 @@ export function getFormat(cmd: Command): OutputFormat {
     process.exit(1);
   }
   return fmt as OutputFormat;
+}
+
+/** True when running with implicit table output (no explicit -o/--output). */
+export function isTuiDefault(cmd: Command): boolean {
+  const output = cmd.optsWithGlobals().output as string | undefined;
+  return (output === undefined || output === null) && getFormat(cmd) === 'table';
+}
+
+type TuiColor = 'cyan' | 'green' | 'red' | 'yellow' | 'dim';
+
+const ANSI: Record<TuiColor, string> = {
+  cyan: '\x1b[36m',
+  green: '\x1b[32m',
+  red: '\x1b[31m',
+  yellow: '\x1b[33m',
+  dim: '\x1b[2m',
+};
+
+const ANSI_RESET = '\x1b[0m';
+
+function supportsColor(): boolean {
+  return process.stdout.isTTY && process.env.NO_COLOR === undefined;
+}
+
+export function colorize(text: string, color: TuiColor): string {
+  if (!supportsColor()) return text;
+  return `${ANSI[color]}${text}${ANSI_RESET}`;
+}
+
+export type TuiProgress = {
+  start: (message: string) => void;
+  stop: (finalMessage?: string) => void;
+};
+
+export function createTuiProgress(enabled: boolean): TuiProgress {
+  const canRender = enabled && process.stdout.isTTY;
+  let active = false;
+
+  const clearLine = () => {
+    if (!canRender || !active) return;
+    process.stdout.write('\r\x1b[2K');
+    active = false;
+  };
+
+  return {
+    start: (message: string) => {
+      if (!canRender) return;
+      const line = colorize(message, 'dim');
+      process.stdout.write(`\r${line}`);
+      active = true;
+    },
+    stop: (finalMessage?: string) => {
+      if (!canRender) {
+        if (finalMessage) console.log(finalMessage);
+        return;
+      }
+      clearLine();
+      if (finalMessage) process.stdout.write(`${finalMessage}\n`);
+    },
+  };
 }
 
 /** Render an array of flat records in the requested format. */
@@ -67,6 +127,61 @@ export function renderEmptyList(format: OutputFormat): void {
   else { console.log('(no results)'); }
 }
 
+export type TuiListRenderOptions = {
+  intro: string;
+  source: string;
+  startedAt?: number;
+};
+
+function headerLabel(key: string): string {
+  return key
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Render list-like output in the shared TUI style:
+ * blank + intro, blank + table, blank + one-line summary footer.
+ */
+export function renderTuiList(rows: Record<string, unknown>[], options: TuiListRenderOptions): void {
+  const startedAt = options.startedAt ?? Date.now();
+  const tableGap = '   ';
+
+  console.log('');
+  console.log(colorize(options.intro, 'cyan'));
+
+  if (rows.length === 0) {
+    const elapsed = Date.now() - startedAt;
+    console.log('\n(no results)');
+    console.log(colorize(`\n• 0 item(s) | ${elapsed} ms | source: ${options.source}`, 'dim'));
+    return;
+  }
+
+  const keys = Object.keys(rows[0]);
+  const labels = keys.map(headerLabel);
+  const widths = keys.map((k, i) =>
+    Math.max(labels[i].length, ...rows.map((r) => visualWidth(String(r[k] ?? '')))),
+  );
+
+  console.log('');
+  process.stdout.write(
+    labels.map((label, i) => padEndVisual(label, widths[i])).join(tableGap) + '\n',
+  );
+  process.stdout.write(widths.map((w) => '─'.repeat(w)).join(tableGap) + '\n');
+
+  for (const row of rows) {
+    process.stdout.write(
+      keys.map((k, i) => padEndVisual(String(row[k] ?? ''), widths[i])).join(tableGap) + '\n',
+    );
+  }
+
+  const elapsed = Date.now() - startedAt;
+  console.log(colorize(`\n• ${rows.length} item(s) | ${elapsed} ms | source: ${options.source}`, 'dim'));
+}
+
 // ── Unicode-aware display-width helpers ───────────────────────────────────────
 
 /**
@@ -74,8 +189,9 @@ export function renderEmptyList(format: OutputFormat): void {
  * (emoji, CJK, etc.) as 2 and zero-width characters as 0.
  */
 export function visualWidth(str: string): number {
+  const stripped = str.replace(/\x1b\[[0-9;]*m/g, '');
   let width = 0;
-  for (const char of str) {
+  for (const char of stripped) {
     const cp = char.codePointAt(0) ?? 0;
     if (
       cp === 0 ||

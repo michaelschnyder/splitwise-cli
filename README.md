@@ -54,6 +54,8 @@ Use `-o` / `--output` when available.
 | `json` | scripts, pipes, automation |
 | `yaml` | readable structured output |
 
+When `--output` is omitted, commands run in TUI mode by default (readable table layout with an intro line, title-cased headers, and a single summary footer line with items/time/source).
+
 ```bash
 splitwise-cli friends list -o yaml
 splitwise-cli expenses list --from -7d -o json
@@ -94,10 +96,14 @@ splitwise-cli friends list -o json
 ### Example Response (`friends list`)
 
 ```text
-id        name            balance
---------  --------------  -----------------
-11111111  Alice Example   -12.40 USD
-22222222  Bob Example     settled up
+Showing friends and balances
+
+Id         Name            Balance
+────────   ─────────────   ─────────────
+11111111   Alice Example   -12.40 USD
+22222222   Bob Example     settled up
+
+• 2 item(s) | 43 ms | source: Splitwise API
 ```
 
 ### Example Response (`friends list -o json`)
@@ -156,10 +162,14 @@ splitwise-cli expenses get 99999 -o yaml
 ### Example Response (`expenses list`)
 
 ```text
-date        group      paidBy        description            cost        category
-----------  ---------  ------------  ---------------------  ----------  --------
-6/10/2026   Flatmates  Alex Example  Groceries              48.90 USD   Food
-6/09/2026   Flatmates  Alex Example  Rent transfer -> Jo    650.00 USD  Payment
+Showing expenses from 2026-06-01 to 2026-06-13
+
+ID         Date         Group      Paid By       Description              Cost        Category   Status
+────────   ──────────   ────────   ───────────   ───────────────────────  ──────────  ────────   ─────────────────
+99999      6/10/2026    Flatmates  Alex Example  Groceries                48.90 USD   Food       credit 24.45 USD
+99998      6/09/2026    Flatmates  Alex Example  Rent transfer -> Jo      650.00 USD  Payment    debit 325.00 USD
+
+• 2 item(s) | 71 ms | source: Splitwise API
 ```
 
 ### Example Response (`expenses list -o json`)

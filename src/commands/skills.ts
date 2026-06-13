@@ -8,7 +8,10 @@ import {
   skillsDir,
   supportedPlatformNames,
 } from '../lib/skills.js';
-import { addOutputOption, getFormat, render } from '../lib/output.js';
+import {
+  addOutputOption, getFormat, render, renderTuiList,
+  isTuiDefault, colorize, createTuiProgress,
+} from '../lib/output.js';
 
 function resolveOrBail(input?: string): string[] {
   const platforms = resolvePlatformList(input);
@@ -37,14 +40,28 @@ export function registerSkills(program: Command): void {
   addOutputOption(skills.command('list'))
     .description('List built-in Splitwise skills')
     .action(function (this: Command) {
-      render(
-        SKILLS.map((s) => ({
-          name: s.name,
-          type: 'skill',
-          description: s.description,
-        })),
-        getFormat(this),
-      );
+      const fmt = getFormat(this);
+      const tuiMode = isTuiDefault(this);
+      const startedAt = Date.now();
+      const progress = createTuiProgress(tuiMode);
+      progress.start('Collecting skill metadata...');
+      progress.stop();
+      const rows = SKILLS.map((s) => ({
+        name: s.name,
+        type: 'skill',
+        description: s.description,
+      }));
+
+      if (tuiMode && fmt === 'table') {
+        renderTuiList(rows, {
+          intro: 'Showing built-in skills',
+          source: 'splitwise-cli built-ins',
+          startedAt,
+        });
+        return;
+      }
+
+      render(rows, fmt);
     });
 
   skills

@@ -46,6 +46,10 @@ splitwise-cli expenses list --friend <id|name> --from -30d
 
 - Balance entries may contain multiple currencies.
 - Settled relationships display as `settled up`.
+- In implicit TUI mode (no `-o`), output is shown as:
+  - one intro line,
+  - readable title-cased table,
+  - one summary footer line with items/time/source.
 
 ## Failure Handling
 

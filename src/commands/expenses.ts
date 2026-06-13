@@ -5,6 +5,7 @@ import { getClient } from '../lib/config.js';
 import {
   addOutputOption, getFormat, formatName,
   render, renderOne, renderEmptyList,
+  isTuiDefault, colorize, createTuiProgress,
   visualWidth, padStartVisual, padEndVisual,
   type OutputFormat,
 } from '../lib/output.js';
@@ -37,6 +38,8 @@ export function registerExpenses(program: Command): void {
       },
     ) {
       const sw = getClient();
+      const fmt = getFormat(this);
+      const tuiMode = isTuiDefault(this);
 
       // ── Parse --query and merge (explicit flags win) ──────────────────────
       if (opts.query) {
@@ -56,6 +59,8 @@ export function registerExpenses(program: Command): void {
       // ── Resolve dates ─────────────────────────────────────────────────────
       const datedAfter  = opts.from ? parseDate(opts.from) : undefined;
       const datedBefore = opts.to   ? parseDate(opts.to)   : undefined;
+
+      const startedAt = Date.now();
 
       // ── Fetch lookup data in parallel ─────────────────────────────────────
       const [allGroups, allFriends] = await Promise.all([
@@ -112,7 +117,7 @@ export function registerExpenses(program: Command): void {
           const matches = allGroups.filter((g) => g.name.toLowerCase().includes(needle));
           if (matches.length === 0) {
             console.warn(`Warning: no group matching "${opts.group}" — returning empty list.`);
-            renderEmptyList(getFormat(this));
+            renderEmptyList(fmt);
             return;
           }
           if (matches.length > 1) {
@@ -140,7 +145,7 @@ export function registerExpenses(program: Command): void {
           );
           if (matches.length === 0) {
             console.warn(`Warning: no friend matching "${opts.friend}" — returning empty list.`);
-            renderEmptyList(getFormat(this));
+            renderEmptyList(fmt);
             return;
           }
           if (matches.length > 1) {
@@ -179,11 +184,24 @@ export function registerExpenses(program: Command): void {
       if (datedAfter !== undefined)  params.datedAfter = datedAfter;
       if (datedBefore !== undefined) params.datedBefore = datedBefore;
 
-      const fmt = getFormat(this);
       const max = opts.all ? Infinity : Number(opts.max);
 
+      let meIdForTui: number | undefined;
+      if (tuiMode && fmt === 'table') {
+        meIdForTui = (await getMe()).id;
+      }
+
+      if (tuiMode) {
+        const fromLabel = datedAfter ?? 'Splitwise implicit default start';
+        const toLabel = datedBefore ?? 'today';
+        console.log('');
+        console.log(colorize(`Showing expenses from ${fromLabel} to ${toLabel}`, 'cyan'));
+      }
+
+      const progress = createTuiProgress(tuiMode);
+
       // ── Row builders ──────────────────────────────────────────────────────
-      type TableRow = { date: string; group: string; paidBy: string; description: string; cost: string; category: string };
+      type TableRow = { id: number; date: string; group: string; paidBy: string; description: string; cost: string; category: string; status: string };
       type SplitRow = { userId: number; name: string; paid: string; owes: string };
       type CommentRow = { id: number; content: string; author: string; createdAt: string };
       type FullRow = {
@@ -209,15 +227,40 @@ export function registerExpenses(program: Command): void {
           const payee = e.users?.find((u) => u.userId !== payer?.userId && Number(u.owedShare) > 0);
           if (payee) description += ` → ${formatName(payee.user)}`;
         }
+
+        const myEntry = meIdForTui !== undefined
+          ? e.users?.find((u) => u.userId === meIdForTui)
+          : undefined;
+        const myPaid = Number(myEntry?.paidShare ?? 0);
+        const myOwes = Number(myEntry?.owedShare ?? 0);
+        const net = myPaid - myOwes;
+        const isEffectivelyZero = Math.abs(net) < 0.005;
+
+        let status = 'n/a';
+        if (myEntry) {
+          if (isEffectivelyZero) status = colorize('settled', 'dim');
+          else if (net < 0) status = colorize(`debit ${Math.abs(net).toFixed(2)} ${e.currencyCode}`, 'red');
+          else status = colorize(`credit ${net.toFixed(2)} ${e.currencyCode}`, 'green');
+        }
+
         const costNum = Number(e.cost);
-        const cost = `${isNaN(costNum) ? e.cost : costNum.toFixed(2)} ${e.currencyCode}`;
+        const rawCost = `${isNaN(costNum) ? e.cost : costNum.toFixed(2)} ${e.currencyCode}`;
+        const cost = myEntry
+          ? (net < 0 ? colorize(rawCost, 'red') : (net > 0 ? colorize(rawCost, 'green') : rawCost))
+          : rawCost;
+
+        const styledDescription = e.payment ? colorize(description, 'dim') : description;
+        const styledCategory = e.payment ? colorize(e.category?.name ?? '', 'dim') : (e.category?.name ?? '');
+
         return {
+          id: e.id,
           date: e.date ? new Date(e.date).toLocaleDateString() : '?',
           group: resolveGroup(e.groupId),
           paidBy: payer ? formatName(payer.user) : '',
-          description,
+          description: styledDescription,
           cost,
-          category: e.category?.name ?? '',
+          category: styledCategory,
+          status,
         };
       };
 
@@ -263,8 +306,18 @@ export function registerExpenses(program: Command): void {
       };
 
       // ── Streaming renderers ───────────────────────────────────────────────
-      const TABLE_KEYS: (keyof TableRow)[] = ['date', 'group', 'paidBy', 'description', 'cost', 'category'];
+      const TABLE_COLUMNS: { key: keyof TableRow; label: string }[] = [
+        { key: 'id', label: tuiMode ? 'ID' : 'id' },
+        { key: 'date', label: tuiMode ? 'Date' : 'date' },
+        { key: 'group', label: tuiMode ? 'Group' : 'group' },
+        { key: 'paidBy', label: tuiMode ? 'Paid By' : 'paidBy' },
+        { key: 'description', label: tuiMode ? 'Description' : 'description' },
+        { key: 'cost', label: tuiMode ? 'Cost' : 'cost' },
+        { key: 'category', label: tuiMode ? 'Category' : 'category' },
+        { key: 'status', label: tuiMode ? 'Status' : 'status' },
+      ];
       const RIGHT_ALIGN = new Set<keyof TableRow>(['cost']);
+      const tableGap = tuiMode ? '   ' : '  ';
       let tableWidths: number[] | null = null;
       let jsonStarted = false;
       let totalPrinted = 0;
@@ -272,22 +325,24 @@ export function registerExpenses(program: Command): void {
       const flushTableRows = (rows: TableRow[]) => {
         if (rows.length === 0) return;
         if (tableWidths === null) {
-          tableWidths = TABLE_KEYS.map((k) =>
-            Math.max(visualWidth(String(k)), ...rows.map((r) => visualWidth(String(r[k] ?? '')))),
+          if (tuiMode) process.stdout.write('\n');
+          tableWidths = TABLE_COLUMNS.map(({ key, label }) =>
+            Math.max(visualWidth(label), ...rows.map((r) => visualWidth(String(r[key] ?? '')))),
           );
           process.stdout.write(
-            TABLE_KEYS.map((k, i) =>
-              RIGHT_ALIGN.has(k) ? padStartVisual(k, tableWidths![i]) : padEndVisual(k, tableWidths![i]),
-            ).join('  ') + '\n',
+            TABLE_COLUMNS.map(({ key, label }, i) =>
+              RIGHT_ALIGN.has(key) ? padStartVisual(label, tableWidths![i]) : padEndVisual(label, tableWidths![i]),
+            ).join(tableGap) + '\n',
           );
-          process.stdout.write(tableWidths.map((w) => '─'.repeat(w)).join('  ') + '\n');
+          process.stdout.write(tableWidths.map((w) => '─'.repeat(w)).join(tableGap) + '\n');
         }
         for (const row of rows) {
           process.stdout.write(
-            TABLE_KEYS.map((k, i) => {
+            TABLE_COLUMNS.map(({ key }, i) => {
+              const k = key;
               const cell = String(row[k] ?? '');
               return RIGHT_ALIGN.has(k) ? padStartVisual(cell, tableWidths![i]) : padEndVisual(cell, tableWidths![i]);
-            }).join('  ') + '\n',
+            }).join(tableGap) + '\n',
           );
           totalPrinted++;
         }
@@ -318,22 +373,41 @@ export function registerExpenses(program: Command): void {
       const finalize = () => {
         if (fmt === 'json') process.stdout.write(jsonStarted ? '\n]\n' : '[]\n');
         else if (totalPrinted === 0) process.stdout.write(fmt === 'yaml' ? '[]\n' : '(no results)\n');
+        if (tuiMode) {
+          const elapsed = Date.now() - startedAt;
+          console.log(colorize(`\n• ${totalPrinted} item(s) | ${elapsed} ms | source: Splitwise API`, 'dim'));
+        }
       };
 
       // ── Execute ───────────────────────────────────────────────────────────
       if (opts.all) {
+        let pageCount = 0;
+        progress.start('Fetching expenses...');
         for await (const page of sw.expenses.list(params).byPage()) {
+          progress.stop();
+          pageCount++;
           flushPage(page);
+          progress.start(`Fetched ${pageCount} page(s), loading more...`);
         }
+        progress.stop();
       } else if (hasLocalFilter) {
         let emitted = 0;
+        let pageCount = 0;
+        progress.start('Fetching expenses...');
         for await (const page of sw.expenses.list(params).byPage()) {
+          progress.stop();
+          pageCount++;
           emitted += flushPage(page, max - emitted);
           if (emitted >= max) break;
+          progress.start(`Fetched ${pageCount} page(s), loading more...`);
         }
+        progress.stop();
       } else {
         params.limit = max;
-        flushPage(await sw.expenses.list(params));
+        progress.start('Fetching expenses...');
+        const page = await sw.expenses.list(params);
+        progress.stop();
+        flushPage(page);
       }
 
       finalize();
@@ -343,11 +417,16 @@ export function registerExpenses(program: Command): void {
     .description('Get details for an expense')
     .action(async function (this: Command, id: string) {
       const sw = getClient();
+      const fmt: OutputFormat = getFormat(this);
+      const tuiMode = isTuiDefault(this);
+      if (tuiMode) console.log(colorize(`Showing expense details for ${id}`, 'cyan'));
+      const progress = createTuiProgress(tuiMode);
+      progress.start('Fetching expense details...');
       const [e, fetchedComments] = await Promise.all([
         sw.expenses.get({ id: Number(id) }),
         sw.comments.list({ expenseId: Number(id) }),
       ]);
-      const fmt: OutputFormat = getFormat(this);
+      progress.stop(colorize('Fetched expense details.', 'green'));
 
       const comments = fetchedComments.map((c) => ({
         id: c.id,

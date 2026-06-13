@@ -1,6 +1,9 @@
 import { Command } from 'commander';
 import { loadConfig, saveConfig, getClient } from '../lib/config.js';
-import { addOutputOption, getFormat, formatName, renderOne } from '../lib/output.js';
+import {
+  addOutputOption, getFormat, formatName, renderOne,
+  isTuiDefault, colorize, createTuiProgress,
+} from '../lib/output.js';
 
 export function registerAuth(program: Command): void {
   const auth = program.command('auth').description('Manage authentication');
@@ -33,10 +36,16 @@ export function registerAuth(program: Command): void {
     .description('Show the currently authenticated user')
     .action(async function (this: Command) {
       const sw = getClient();
+      const fmt = getFormat(this);
+      const tuiMode = isTuiDefault(this);
+      if (tuiMode) console.log(colorize('Showing currently authenticated user', 'cyan'));
+      const progress = createTuiProgress(tuiMode);
+      progress.start('Fetching user profile...');
       const me = await sw.users.getCurrent();
+      progress.stop(colorize('Fetched user profile.', 'green'));
       renderOne(
         { id: me.id, name: formatName(me), email: me.email },
-        getFormat(this),
+        fmt,
       );
     });
 }

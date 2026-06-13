@@ -87,6 +87,11 @@ splitwise-cli expenses get <id> -o yaml
 - Use `table` for terminal review.
 - Use `json` for scripts and downstream processing.
 - Use `yaml` for readable long-form output.
+- In implicit TUI mode (no `-o`), list output includes:
+  - one intro line,
+  - title-cased table headers with `ID` as first column,
+  - one summary footer line with items/time/source.
+- Expense status uses `credit` (green) and `debit` (red); payment descriptions are dimmed.
 
 ~~~bash
 splitwise-cli expenses list --all -o json

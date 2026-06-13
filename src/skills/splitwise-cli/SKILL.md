@@ -60,6 +60,8 @@ splitwise-cli expenses list --from -30d --all
 
 Most list/get commands support -o table|json|yaml.
 
+When `-o/--output` is omitted, list commands default to TUI table mode with one intro line and one summary footer line (items/time/source).
+
 ## Common Workflows
 
 ### Expense triage
