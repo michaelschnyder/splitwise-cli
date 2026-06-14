@@ -20,9 +20,9 @@ npx splitwise-cli --help
 ## Quick Start
 
 ```bash
-# save login credentials (named entries are supported)
-splitwise-cli login token YOUR_TOKEN --name personal
-# splitwise-cli login oauth YOUR_KEY YOUR_SECRET --name work
+# save login credentials
+splitwise-cli login token YOUR_TOKEN
+# splitwise-cli login oauth YOUR_KEY YOUR_SECRET
 
 # verify current login
 splitwise-cli login whoami
@@ -31,6 +31,8 @@ splitwise-cli login whoami
 splitwise-cli friends list
 splitwise-cli groups list
 splitwise-cli expenses list --from -30d --all
+splitwise-cli cache add all
+splitwise-cli cache status
 ```
 
 Configuration is stored under `~/.splitwise-cli/`.
@@ -44,7 +46,7 @@ Configuration is stored under `~/.splitwise-cli/`.
 | Groups | List groups and fetch group details | `list`, `get` | [Groups](#groups) |
 | Expenses | Query expenses with date/person/group filters | `list`, `get` | [Expenses](#expenses) |
 | Profiles | Manage profile restrictions, active profile, and lock state | `list`, `show`, `create`, `edit`, `select`, `remove`, `validate`, `lock` | [Profiles](#profiles) |
-| Cache | Export immutable snapshots and inspect offline cache state | `export`, `list`, `refresh`, `status` | [Cache & Offline](#cache--offline) |
+| Cache | Export immutable snapshots and inspect offline cache state | `add`, `list`, `refresh`, `status`, `delete` | [Cache & Offline](#cache--offline) |
 | Skills | List/install/create assistant skill files | `list`, `path`, `install`, `create` | [Skills](#skills) |
 
 For global log flags, output streams, and debug behavior, see [Console Logging](#console-logging).
@@ -88,8 +90,8 @@ Create login credentials at [splitwise.com/apps/register](https://www.splitwise.
 ### Commands
 
 ```bash
-splitwise-cli login token YOUR_TOKEN --name personal
-splitwise-cli login oauth YOUR_KEY YOUR_SECRET --name work
+splitwise-cli login token YOUR_TOKEN
+splitwise-cli login oauth YOUR_KEY YOUR_SECRET
 splitwise-cli login list
 splitwise-cli login status
 splitwise-cli login select work
@@ -157,12 +159,26 @@ splitwise-cli groups list
 splitwise-cli groups get <groupId>
 ```
 
+### Happy Path
+
+```bash
+splitwise-cli groups list
+splitwise-cli groups get <groupId>
+```
+
 ## Expenses
 
 ### Commands
 
 ```bash
 splitwise-cli expenses list [options]
+splitwise-cli expenses get <expenseId>
+```
+
+### Happy Path
+
+```bash
+splitwise-cli expenses list --from -30d --all
 splitwise-cli expenses get <expenseId>
 ```
 
@@ -253,12 +269,27 @@ Lock behavior:
 
 ```bash
 splitwise-cli profiles list
+splitwise-cli profiles show <name>
+splitwise-cli profiles create <name>
+splitwise-cli profiles edit <name>
+splitwise-cli profiles select <name>
+splitwise-cli profiles validate [name]
+splitwise-cli profiles lock [name]
+```
+
+### Happy Path
+
+```bash
+splitwise-cli profiles list
 splitwise-cli profiles show default
-splitwise-cli profiles create work --create-expenses no --profile-credential personal
-splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345 --profile-credential work
+splitwise-cli profiles create work
 splitwise-cli profiles select work
-splitwise-cli profiles validate work
-splitwise-cli profiles lock work
+```
+
+### Example: Add Profile Limits
+
+```bash
+splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345 --limit-expenses-to-friends Alice,67890
 ```
 
 ### Core Options (`profiles create|edit`)
@@ -292,19 +323,20 @@ Use the `cache` command group to export immutable local snapshots and query data
 ### Cache Targets
 
 - `local`: workspace-local cache under the current working directory
-- `user`: cache under `~/.splitwise-cli/cache`
+- `user`: cache under `~/.splitwise-cli/cache` (**default**)
 - `global`: appdata-based cache area
 
 ### Commands
 
 ```bash
-splitwise-cli cache add expenses --from -30d --target local
+splitwise-cli cache add expenses --from -30d
+splitwise-cli cache add lookup
 splitwise-cli cache add lookup --target user
-splitwise-cli cache refresh expenses --target local
-splitwise-cli cache delete 01hzzzzzzzzzzzzzzzzzzzzzzz --target local
-splitwise-cli cache delete --all --target local
-splitwise-cli cache list --target local
-splitwise-cli cache status --target local
+splitwise-cli cache refresh expenses
+splitwise-cli cache delete 01hzzzzzzzzzzzzzzzzzzzzzzz
+splitwise-cli cache delete --all
+splitwise-cli cache list
+splitwise-cli cache status
 ```
 
 `cache add` and `cache refresh` create immutable cache directories. Writes are staged into temporary cache folders and finalized by rename, so incomplete exports are not exposed as valid cache snapshots.
@@ -313,7 +345,7 @@ splitwise-cli cache status --target local
 
 ```bash
 # add while online
-splitwise-cli cache add all --target local
+splitwise-cli cache add all
 
 # read from cache only
 splitwise-cli --offline expenses list --from -30d --all
@@ -350,6 +382,7 @@ Built-in skills are copied into the package and can be installed for supported a
 - `splitwise-groups`
 - `splitwise-friends`
 - `splitwise-profiles`
+- `splitwise-cache`
 
 ### Commands
 

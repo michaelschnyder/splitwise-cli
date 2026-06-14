@@ -98,6 +98,11 @@ const SKILL_RESOURCES: SkillResourceEntry[] = [
     description: 'Profile restrictions, locking, and selection workflows.',
     resourceDir: 'splitwise-profiles',
   },
+  {
+    name: 'splitwise-cache',
+    description: 'Cache export, refresh, status, and offline workflows.',
+    resourceDir: 'splitwise-cache',
+  },
 ];
 
 const SKILLS_ROOT = findSkillsRoot();

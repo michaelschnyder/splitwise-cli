@@ -17,9 +17,13 @@ Use this skill when you need to manage profile-based restrictions in splitwise-c
 | Task | Command |
 |------|---------|
 | List profiles | `splitwise-cli profiles list` |
-| Show one profile | `splitwise-cli profiles show <name>` |
+| Show active profile | `splitwise-cli profiles show default` |
 | Create profile | `splitwise-cli profiles create <name>` |
-| Edit profile limits | `splitwise-cli profiles edit <name> --limit-expenses-to-groups <items>` |
+| Edit profile limits | `splitwise-cli profiles edit <name> --limit-expenses-to-groups Flatmates,12345` |
+| Bind a credential | `splitwise-cli profiles edit <name> --profile-credential <name>` |
+| Set offline default | `splitwise-cli profiles edit <name> --offline-enabled yes` |
+| Set cache target | `splitwise-cli profiles edit <name> --preferred-cache-target local` |
+| Override API base URL | `splitwise-cli profiles edit <name> --api-endpoint <url>` |
 | Select active profile | `splitwise-cli profiles select <name>` |
 | Validate profile ids | `splitwise-cli profiles validate <name>` |
 | Lock profile | `splitwise-cli profiles lock <name>` |
@@ -28,6 +32,7 @@ Use this skill when you need to manage profile-based restrictions in splitwise-c
 
 - Credentials remain global (`~/.splitwise-cli/config.json`), and profiles can bind one by name.
 - Profiles are stored one file per profile (`~/.splitwise-cli/profiles/<name>.json`).
+- Profiles can default offline mode, choose a preferred cache target, and override the API endpoint.
 - Restriction semantics:
   - missing/null restriction field => unrestricted
   - empty list => allow nobody
@@ -40,12 +45,38 @@ Use this skill when you need to manage profile-based restrictions in splitwise-c
 ~~~bash
 splitwise-cli profiles list
 splitwise-cli profiles show default
-splitwise-cli profiles create work --create-expenses no --profile-credential personal
-splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345 --profile-credential work
+splitwise-cli profiles create work
+splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345
 splitwise-cli profiles select work
 splitwise-cli profiles validate work
 splitwise-cli profiles lock work
 ~~~
+
+## Restriction Examples
+
+~~~bash
+splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345
+splitwise-cli profiles edit work --limit-expenses-to-friends Alice,67890
+splitwise-cli profiles edit work --limit-expenses-to-groups none
+splitwise-cli profiles edit work --limit-expenses-to-friends null
+~~~
+
+## Supported Edit Flags
+
+- `--create-expenses <yes|no>`
+- `--update-expenses <yes|no>`
+- `--delete-expenses <yes|no>`
+- `--offline-enabled <yes|no>`
+- `--limit-expenses-to-groups <items>`
+- `--limit-expenses-to-friends <items>`
+- `--clear-expense-group-limit`
+- `--clear-expense-friend-limit`
+- `--profile-credential <name>`
+- `--clear-profile-credential`
+- `--preferred-cache-target <target>`
+- `--clear-preferred-cache-target`
+- `--api-endpoint <url>`
+- `--clear-api-endpoint`
 
 ## Lock Recovery
 
