@@ -960,8 +960,10 @@ export function getDataClient(cmd?: Command, explicitCredentialName?: string): D
   const offline = resolveOfflineMode(cmd);
   if (offline) {
     const target = resolveCacheTarget(cmd);
+    const sourceLabel = getCacheRootPath(target);
     const offlineClient = createOfflineSplitwiseClient({
-      target: resolveCacheTarget(cmd),
+      target,
+      sourceLabel,
       profileName: resolveProfile(cmd).name,
       profile: resolveProfile(cmd).profile,
       credentialName: name,
@@ -970,7 +972,7 @@ export function getDataClient(cmd?: Command, explicitCredentialName?: string): D
 
     return attachClientMetadata(offlineClient, {
       sourceKind: 'cache',
-      sourceLabel: getCacheRootPath(target),
+      sourceLabel,
       consumeWarnings: () => offlineClient.consumeOfflineWarnings?.() ?? [],
     });
   }

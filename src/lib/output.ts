@@ -464,9 +464,15 @@ export function renderTuiList(rows: Record<string, unknown>[], options: TuiListR
 
   const keys = Object.keys(rows[0]);
   const labels = keys.map(headerLabel);
-  const widths = keys.map((k, i) =>
-    Math.max(labels[i].length, ...rows.map((r) => visualWidth(String(r[k] ?? '')))),
-  );
+  const widths = keys.map((k, i) => {
+    const values = rows.flatMap((row) => String(row[k] ?? '').split('\n'));
+    return Math.max(labels[i].length, ...values.map((value) => visualWidth(value)));
+  });
+
+  const renderCellLines = (value: unknown, width: number): string[] => {
+    const lines = String(value ?? '').split('\n');
+    return lines.map((line) => padEndVisual(line, width));
+  };
 
   console.log('');
   const styledLabels = labels.map((label) =>
@@ -479,9 +485,14 @@ export function renderTuiList(rows: Record<string, unknown>[], options: TuiListR
   process.stdout.write(`${supportsColor('stdout') ? chalkStdout.dim(separator) : separator}\n`);
 
   for (const row of rows) {
-    process.stdout.write(
-      keys.map((k, i) => padEndVisual(String(row[k] ?? ''), widths[i])).join(tableGap) + '\n',
-    );
+    const cellLines = keys.map((key, index) => renderCellLines(row[key], widths[index]));
+    const rowHeight = Math.max(...cellLines.map((lines) => lines.length));
+
+    for (let lineIndex = 0; lineIndex < rowHeight; lineIndex += 1) {
+      process.stdout.write(
+        cellLines.map((lines, index) => lines[lineIndex] ?? ' '.repeat(widths[index])).join(tableGap) + '\n',
+      );
+    }
   }
 
   process.stdout.write('\n');

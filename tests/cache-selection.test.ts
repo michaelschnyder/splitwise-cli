@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { generateBatchId, uncoveredExpenseRanges, type CacheManifestEntry } from '../src/lib/cache.js';
+import { classifyEntryCoverage, deriveExpenseRefreshPlan, generateBatchId, uncoveredExpenseRanges, type CacheManifestEntry } from '../src/lib/cache.js';
 
 function expenseEntry(input: {
   batchId: string;
@@ -22,7 +22,7 @@ function expenseEntry(input: {
       expenseDateMin: input.min,
       expenseDateMax: input.max,
     },
-    payloadPath: `batches/${input.batchId}/expenses.json`,
+    payloadPath: `cache/${input.batchId}/expenses.json`,
   };
 }
 
@@ -57,4 +57,54 @@ test('uncoveredExpenseRanges reports leading and trailing gaps', () => {
     '2024-04-01 to 2024-04-30',
     '2024-06-01 to 2024-06-30',
   ]);
+});
+
+test('deriveExpenseRefreshPlan prefers dual cursor when created and updated bounds exist', () => {
+  const plan = deriveExpenseRefreshPlan({
+    latestEntry: {
+      ...expenseEntry({ batchId: 'baseline', min: '2024-01-01', max: '2024-03-31' }),
+      coverage: {
+        expenseDateMin: '2024-01-01',
+        expenseDateMax: '2024-03-31',
+        createdAtMax: '2024-03-31T10:00:00.000Z',
+        updatedAtMax: '2024-03-31T12:00:00.000Z',
+      },
+      scope: { from: '2024-01-01', to: '2024-03-31' },
+    },
+    baseScope: { from: '2024-01-01', to: '2024-04-30' },
+  });
+
+  assert.equal(plan.strategy, 'dual-cursor');
+  assert.equal(plan.scope.createdAfter, '2024-03-31T10:00:00.000Z');
+  assert.equal(plan.scope.updatedAfter, '2024-03-31T12:00:00.000Z');
+});
+
+test('deriveExpenseRefreshPlan falls back to bounded overlap when cursor coverage is missing', () => {
+  const plan = deriveExpenseRefreshPlan({
+    latestEntry: {
+      ...expenseEntry({ batchId: 'baseline', min: '2024-01-01', max: '2024-03-31' }),
+      scope: { from: '2024-01-01', to: '2024-03-31' },
+      coverage: {},
+    },
+    baseScope: { from: '2024-01-01', to: '2024-04-30' },
+    fallbackWindowDays: 10,
+  });
+
+  assert.equal(plan.strategy, 'bounded-fallback');
+  assert.equal(plan.scope.refreshFallbackDays, 10);
+  assert.equal(plan.scope.from, '2024-03-21');
+});
+
+test('classifyEntryCoverage reports full and partial coverage states', () => {
+  const full = classifyEntryCoverage({
+    ...expenseEntry({ batchId: 'full', min: '2024-01-01', max: '2024-01-31' }),
+    scope: { from: '2024-01-05', to: '2024-01-25' },
+  });
+  const partial = classifyEntryCoverage({
+    ...expenseEntry({ batchId: 'partial', min: '2024-01-01', max: '2024-01-31' }),
+    scope: undefined,
+  });
+
+  assert.equal(full, 'full');
+  assert.equal(partial, 'partial');
 });

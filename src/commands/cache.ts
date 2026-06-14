@@ -11,18 +11,27 @@ import {
   setCredentialIdentity,
 } from '../lib/config.js';
 import {
-  appendCacheEntry,
+  appendCacheEntries,
+  cachePayloadPath,
   type CategoriesCachePayload,
+  classifyEntryCoverage,
   type CommentsCachePayload,
+  createStagedBatchId,
   createCacheEntry,
+  deriveExpenseRefreshPlan,
   type CurrenciesCachePayload,
   ensureCacheManifest,
+  finalizeStagedBatch,
   findEquivalentCacheEntry,
   findLatestCacheEntry,
   generateBatchId,
+  removeBatch,
+  removeCacheRoot,
+  saveCacheManifest,
   summarizeScope,
   type CacheEntity,
   type CacheScope,
+  type CacheManifestEntry,
   type ExpensesCachePayload,
   type FriendsCachePayload,
   type GroupsCachePayload,
@@ -120,6 +129,8 @@ async function exportExpenses(sw: ReturnType<typeof getClient>, scope: CacheScop
   if (scope.friendId !== undefined) params.friendId = scope.friendId;
   if (scope.from !== undefined) params.datedAfter = scope.from;
   if (scope.to !== undefined) params.datedBefore = scope.to;
+  if (scope.createdAfter !== undefined) params.createdAfter = scope.createdAfter;
+  if (scope.createdBefore !== undefined) params.createdBefore = scope.createdBefore;
   if (scope.updatedAfter !== undefined) params.updatedAfter = scope.updatedAfter;
   if (scope.updatedBefore !== undefined) params.updatedBefore = scope.updatedBefore;
 
@@ -169,60 +180,67 @@ async function exportLookup(sw: ReturnType<typeof getClient>): Promise<{ categor
   };
 }
 
-async function persistExport(target: CacheTarget, batchId: string, entity: Exclude<CacheEntity, 'all'>, payload: ExpensesCachePayload | CommentsCachePayload | FriendsCachePayload | GroupsCachePayload | CategoriesCachePayload | CurrenciesCachePayload, scope: CacheScope | undefined, context: {
+async function persistExport(target: CacheTarget, input: {
+  writeBatchId: string;
+  finalBatchId: string;
+  entity: Exclude<CacheEntity, 'all'>;
+  payload: ExpensesCachePayload | CommentsCachePayload | FriendsCachePayload | GroupsCachePayload | CategoriesCachePayload | CurrenciesCachePayload;
+  scope: CacheScope | undefined;
+  exportedAt: string;
+}, context: {
   profileName: string;
   credentialName: string;
   currentUser: CurrentUser;
   logger: ReturnType<typeof createLogger>;
-}): Promise<void> {
+}): Promise<CacheManifestEntry> {
   const existing = findEquivalentCacheEntry(target, {
-    entity,
+    entity: input.entity,
     accountUserId: context.currentUser.id,
     profileName: context.profileName,
-    scope,
+    scope: input.scope,
   });
 
   if (existing) {
-    context.logger.warn(`Equivalent ${entity} cache scope already exists in batch ${existing.batchId}. Creating a new immutable export anyway.`);
+    context.logger.warn(`Equivalent ${input.entity} cache scope already exists in batch ${existing.batchId}. Creating a new immutable export anyway.`);
   }
 
-  const payloadPath = writeCachePayload(target, batchId, payload);
-  const exportedAt = new Date().toISOString();
-  const requestUrl = entity === 'expenses'
+  writeCachePayload(target, input.writeBatchId, input.payload);
+  const requestUrl = input.entity === 'expenses'
     ? '/get_expenses'
-    : entity === 'comments'
+    : input.entity === 'comments'
       ? '/get_comments'
-    : entity === 'groups'
+    : input.entity === 'groups'
       ? '/get_groups'
-      : entity === 'friends'
+      : input.entity === 'friends'
         ? '/get_friends'
-      : entity === 'categories'
+      : input.entity === 'categories'
           ? '/get_categories'
           : '/get_currencies';
 
-  appendCacheEntry(target, createCacheEntry({
-    batchId,
-    entity,
+  return createCacheEntry({
+    batchId: input.finalBatchId,
+    entity: input.entity,
     target,
     profileName: context.profileName,
     credentialName: context.credentialName,
     accountUserId: context.currentUser.id,
     accountUserName: formatName(context.currentUser),
-    exportedAt,
-    scope,
+    exportedAt: input.exportedAt,
+    scope: input.scope,
     request: {
       method: 'GET',
       url: requestUrl,
     },
-    payloadPath,
-    payload,
-  }));
+    payloadPath: cachePayloadPath(input.finalBatchId, input.payload),
+    payload: input.payload,
+  });
 }
 
 async function performExport(cmd: Command, entity: CacheEntity, options: CacheEntityOption, refreshMode = false): Promise<void> {
   const logger = createLogger(cmd, 'cache');
+  const exportLogger = logger.withTag('cache-export');
   if (resolveOfflineMode(cmd)) {
-    logger.error('Offline mode is active. cache export and cache refresh require server access.');
+    logger.error('Offline mode is active. cache add and cache refresh require server access.');
     process.exit(1);
   }
 
@@ -233,6 +251,9 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
   const credentialName = resolveCredential(cmd).name;
   const currentUser = await resolveCurrentUser(sw, credentialName);
   const batchId = generateBatchId();
+  const stagedBatchId = createStagedBatchId(batchId);
+  const exportedAt = new Date().toISOString();
+  exportLogger.debug(`Preparing ${refreshMode ? 'refresh' : 'export'} for ${entity} in target ${target} with staged batch ${stagedBatchId}.`);
 
   let groupId: number | undefined;
   let friendId: number | undefined;
@@ -255,75 +276,202 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
     groupId: options.group !== undefined ? groupId : latestScope?.groupId ?? groupId,
     friendId: options.friend !== undefined ? friendId : latestScope?.friendId ?? friendId,
   } satisfies CacheScope;
-  const refreshScope = refreshMode && latestExpenseEntry
-    ? { ...baseExpenseScope, refreshOfBatchId: latestExpenseEntry.batchId, updatedAfter: latestExpenseEntry.coverage?.updatedAtMax }
-    : baseExpenseScope;
+  const refreshPlan = refreshMode
+    ? deriveExpenseRefreshPlan({ latestEntry: latestExpenseEntry, baseScope: baseExpenseScope })
+    : { strategy: 'full' as const, scope: baseExpenseScope };
+  const refreshScope = refreshPlan.scope;
+  if (refreshMode) {
+    exportLogger.info(`Refresh strategy for ${entity}: ${refreshPlan.strategy}.`);
+    exportLogger.debug(`Refresh scope: ${summarizeScope(refreshScope)}.`);
+    exportLogger.trace(`Refresh baseline batch: ${latestExpenseEntry?.batchId ?? 'none'}.`);
+  }
 
   const context = { profileName, credentialName, currentUser, logger };
-  const tasks: Array<Promise<void>> = [];
+  const tasks: Array<Promise<CacheManifestEntry[]>> = [];
 
   if (entity === 'friends' || entity === 'all') {
-    tasks.push(exportFriends(sw).then((payload) => persistExport(target, batchId, 'friends', payload, undefined, context)));
+    tasks.push(exportFriends(sw).then(async (payload) => [await persistExport(target, {
+      writeBatchId: stagedBatchId,
+      finalBatchId: batchId,
+      entity: 'friends',
+      payload,
+      scope: undefined,
+      exportedAt,
+    }, context)]));
   }
   if (entity === 'groups' || entity === 'all') {
-    tasks.push(exportGroups(sw).then((payload) => persistExport(target, batchId, 'groups', payload, undefined, context)));
+    tasks.push(exportGroups(sw).then(async (payload) => [await persistExport(target, {
+      writeBatchId: stagedBatchId,
+      finalBatchId: batchId,
+      entity: 'groups',
+      payload,
+      scope: undefined,
+      exportedAt,
+    }, context)]));
   }
   if (entity === 'lookup' || entity === 'all') {
     tasks.push(
       exportLookup(sw).then(async (payloads) => {
-        await persistExport(target, batchId, 'categories', payloads.categories, undefined, context);
-        await persistExport(target, batchId, 'currencies', payloads.currencies, undefined, context);
+        const categoriesEntry = await persistExport(target, {
+          writeBatchId: stagedBatchId,
+          finalBatchId: batchId,
+          entity: 'categories',
+          payload: payloads.categories,
+          scope: undefined,
+          exportedAt,
+        }, context);
+        const currenciesEntry = await persistExport(target, {
+          writeBatchId: stagedBatchId,
+          finalBatchId: batchId,
+          entity: 'currencies',
+          payload: payloads.currencies,
+          scope: undefined,
+          exportedAt,
+        }, context);
+        return [categoriesEntry, currenciesEntry];
       }),
     );
   }
   if (entity === 'expenses' || entity === 'all') {
     tasks.push(
       exportExpenses(sw, refreshScope).then(async (payload) => {
-        await persistExport(target, batchId, 'expenses', payload, refreshScope, context);
+        const entries: CacheManifestEntry[] = [];
+        entries.push(await persistExport(target, {
+          writeBatchId: stagedBatchId,
+          finalBatchId: batchId,
+          entity: 'expenses',
+          payload,
+          scope: refreshScope,
+          exportedAt,
+        }, context));
         const commentPayload = await exportComments(sw, payload.items);
-        await persistExport(target, batchId, 'comments', commentPayload, refreshScope, context);
+        entries.push(await persistExport(target, {
+          writeBatchId: stagedBatchId,
+          finalBatchId: batchId,
+          entity: 'comments',
+          payload: commentPayload,
+          scope: refreshScope,
+          exportedAt,
+        }, context));
         if (entity === 'expenses') {
           const groupsPayload = await exportGroupsLite(sw);
-          await persistExport(target, batchId, 'groups', groupsPayload, undefined, context);
+          entries.push(await persistExport(target, {
+            writeBatchId: stagedBatchId,
+            finalBatchId: batchId,
+            entity: 'groups',
+            payload: groupsPayload,
+            scope: undefined,
+            exportedAt,
+          }, context));
         }
+        return entries;
       }),
     );
   }
 
-  await Promise.all(tasks);
-  logger.success(`${refreshMode ? 'Refreshed' : 'Exported'} ${entity} into cache target ${target} with batch ${batchId}.`);
+  let finalized = false;
+  try {
+    const entries = (await Promise.all(tasks)).flat();
+    exportLogger.debug(`Finalizing staged batch ${stagedBatchId} as ${batchId}.`);
+    finalizeStagedBatch(target, stagedBatchId, batchId);
+    finalized = true;
+    appendCacheEntries(target, entries);
+    exportLogger.debug(`Manifest updated with ${entries.length} entries for batch ${batchId}.`);
+  } catch (err) {
+    if (!finalized) {
+      exportLogger.warn(`Removing staged batch ${stagedBatchId} after export failure.`);
+      removeBatch(target, stagedBatchId);
+    }
+    throw err;
+  }
+
+  logger.success(`${refreshMode ? 'Refreshed' : 'Added'} ${entity} into cache target ${target} with cache id ${batchId}.`);
+}
+
+function deleteCacheEntry(target: CacheTarget, cacheId: string): void {
+  const manifest = ensureCacheManifest(target);
+  const nextEntries = manifest.entries.filter((entry) => entry.batchId !== cacheId);
+  if (nextEntries.length === manifest.entries.length) {
+    throw new Error(`Cache id ${cacheId} was not found for target ${target}.`);
+  }
+
+  manifest.entries = nextEntries;
+  saveCacheManifest(target, manifest);
+  removeBatch(target, cacheId);
+}
+
+function formatDateRange(min?: string, max?: string): string {
+  if (!min && !max) return 'n/a';
+  if (min && max && min === max) return min;
+  if (min && max) return `${min} to ${max}`;
+  return min ?? max ?? 'n/a';
+}
+
+function formatScopeFilters(scope?: CacheScope): string {
+  const parts = [
+    scope?.from ? `from: ${scope.from}` : '',
+    scope?.to ? `to: ${scope.to}` : '',
+    scope?.groupId !== undefined ? `group: ${scope.groupId}` : '',
+    scope?.friendId !== undefined ? `friend: ${scope.friendId}` : '',
+    scope?.createdAfter ? `created_after: ${scope.createdAfter}` : '',
+    scope?.createdBefore ? `created_before: ${scope.createdBefore}` : '',
+    scope?.updatedAfter ? `updated_after: ${scope.updatedAfter}` : '',
+    scope?.updatedBefore ? `updated_before: ${scope.updatedBefore}` : '',
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join('\n') : 'n/a';
+}
+
+function describeCacheListEntry(entry: CacheManifestEntry): Record<string, unknown> {
+  const coverageLines: string[] = [`created_at: ${formatDateRange(entry.coverage?.createdAtMin, entry.coverage?.createdAtMax)}`];
+  if (entry.entity === 'expenses') {
+    coverageLines.unshift(`expense_date: ${formatDateRange(entry.coverage?.expenseDateMin, entry.coverage?.expenseDateMax)}`);
+    coverageLines.push(`updated_at: ${formatDateRange(entry.coverage?.updatedAtMin, entry.coverage?.updatedAtMax)}`);
+  } else if (entry.coverage?.updatedAtMin || entry.coverage?.updatedAtMax) {
+    coverageLines.push(`updated_at: ${formatDateRange(entry.coverage?.updatedAtMin, entry.coverage?.updatedAtMax)}`);
+  }
+
+  const filterLines: string[] = [];
+  if (entry.entity === 'expenses') {
+    filterLines.push(formatScopeFilters(entry.scope));
+  } else {
+    filterLines.push('n/a');
+  }
+
+  return {
+    entity: entry.entity,
+    batchId: entry.batchId,
+    items: entry.rowCount ?? 0,
+    coverage: coverageLines.join('\n'),
+    filters: filterLines.join('\n'),
+    createdAt: entry.exportedAt,
+    identity: [
+      `target: ${entry.target}`,
+      `profile: ${entry.profileName}`,
+      `credential: ${entry.credentialName ?? ''}`,
+      `account: ${entry.accountUserName ?? ''} (${entry.accountUserId ?? 'unknown'})`,
+    ].join('\n'),
+    coverageStatus: classifyEntryCoverage(entry),
+  };
 }
 
 export function registerCache(program: Command): void {
-  const cache = program.command('cache').description('Inspect and manage local cache exports');
+  const cache = program.command('cache').description('Inspect and manage local cache snapshots');
 
   addOutputOption(addCacheTargetOption(cache.command('list')))
     .description('List cached export metadata for a cache target')
     .action(function (this: Command, options: CacheTargetOption) {
       const logger = createLogger(this, 'cache');
+      const cacheLogger = logger.withTag('cache-list');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
       const startedAt = Date.now();
       const target = resolvedTarget(this, options);
       const manifest = ensureCacheManifest(target);
-      const rows = manifest.entries.map((entry) => ({
-        batchId: entry.batchId,
-        entity: entry.entity,
-        target: entry.target,
-        accountUserId: entry.accountUserId ?? null,
-        accountUserName: entry.accountUserName ?? '',
-        profileName: entry.profileName,
-        credentialName: entry.credentialName ?? '',
-        exportedAt: entry.exportedAt,
-        rowCount: entry.rowCount ?? null,
-        expenseDateMin: entry.coverage?.expenseDateMin ?? '',
-        expenseDateMax: entry.coverage?.expenseDateMax ?? '',
-        createdAtMin: entry.coverage?.createdAtMin ?? '',
-        createdAtMax: entry.coverage?.createdAtMax ?? '',
-        updatedAtMin: entry.coverage?.updatedAtMin ?? '',
-        updatedAtMax: entry.coverage?.updatedAtMax ?? '',
-        scope: summarizeScope(entry.scope),
-      }));
+      const rows = manifest.entries.map((entry) => {
+        const row = describeCacheListEntry(entry);
+        cacheLogger.trace(`Entry ${entry.entity} ${entry.batchId}: ${String(row.coverageStatus)} coverage, ${entry.rowCount ?? 0} item(s).`);
+        return row;
+      });
 
       if (tuiMode && fmt === 'table') {
         renderTuiList(rows, {
@@ -367,8 +515,8 @@ export function registerCache(program: Command): void {
       );
     });
 
-  addExpenseScopeOptions(addCacheTargetOption(cache.command('export <entity>')))
-    .description('Export server data into the local cache')
+  addExpenseScopeOptions(addCacheTargetOption(cache.command('add <entity>')))
+    .description('Add server data into the local cache')
     .action(async function (this: Command, entity: string, options: CacheEntityOption) {
       const normalized = entity as CacheEntity;
       if (!['expenses', 'friends', 'groups', 'lookup', 'all'].includes(normalized)) {
@@ -389,5 +537,33 @@ export function registerCache(program: Command): void {
         process.exit(1);
       }
       await performExport(this, normalized, options, true);
+    });
+
+  addOutputOption(addCacheTargetOption(cache.command('delete [id]')))
+    .option('--all', 'Delete all cached data for the selected target')
+    .description('Delete one cache id or all cache data for a target')
+    .action(function (this: Command, id?: string, options?: CacheTargetOption & { all?: boolean }) {
+      const logger = createLogger(this, 'cache');
+      const target = resolvedTarget(this, options);
+
+      if (options?.all) {
+        removeCacheRoot(target);
+        logger.success(`Deleted all cache data for target ${target}.`);
+        return;
+      }
+
+      if (!id) {
+        logger.error('Provide a cache id or pass --all.');
+        process.exit(1);
+      }
+
+      try {
+        deleteCacheEntry(target, id);
+      } catch (error) {
+        logger.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      }
+
+      logger.success(`Deleted cache id ${id} from target ${target}.`);
     });
 }

@@ -66,7 +66,9 @@ function canonicalizeById(rawJson: string): unknown {
 }
 
 function startMockServer() {
+  let requestCount = 0;
   const server = createServer((req, res) => {
+    requestCount += 1;
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const path = url.pathname.replace(/^\/api\/v3\.0/, '') || url.pathname;
     const sendJson = (payload: unknown) => {
@@ -139,13 +141,22 @@ function startMockServer() {
     res.end(JSON.stringify({ error: 'not found' }));
   });
 
-  return new Promise<{ baseUrl: string; close: () => Promise<void> }>((resolvePromise) => {
+  return new Promise<{ baseUrl: string; close: () => Promise<void>; getRequestCount: () => number }>((resolvePromise) => {
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Failed to start mock Splitwise server');
+      let closed = false;
       resolvePromise({
         baseUrl: `http://127.0.0.1:${address.port}`,
-        close: () => new Promise((resolveClose) => server.close(() => resolveClose())),
+        close: () => new Promise((resolveClose) => {
+          if (closed) {
+            resolveClose();
+            return;
+          }
+          closed = true;
+          server.close(() => resolveClose());
+        }),
+        getRequestCount: () => requestCount,
       });
     });
   });
@@ -157,7 +168,7 @@ async function setupE2EEnvironment(): Promise<{
   profileName: string;
   credentialName: string;
   env: NodeJS.ProcessEnv;
-  mockServer: { baseUrl: string; close: () => Promise<void> };
+  mockServer: { baseUrl: string; close: () => Promise<void>; getRequestCount: () => number };
 }> {
   const mockServer = await startMockServer();
   const tempDir = mkdtempSync(join(tmpdir(), 'splitwise-cli-e2e-'));
@@ -191,7 +202,7 @@ async function teardownE2EEnvironment(input: {
   profileName: string;
   credentialName: string;
   env: NodeJS.ProcessEnv;
-  mockServer: { close: () => Promise<void> };
+  mockServer: { close: () => Promise<void>; getRequestCount: () => number };
 }): Promise<void> {
   await runCli(['--config-dir', input.configDir, 'profiles', 'remove', input.profileName], input.tempDir, input.env);
   await runCli(['--config-dir', input.configDir, 'login', 'remove', input.credentialName], input.tempDir, input.env);
@@ -220,7 +231,7 @@ test('e2e cache export then offline query returns same result against a local mo
       '--config-dir', e2e.configDir,
       '--profile', e2e.profileName,
       'cache',
-      'export',
+      'add',
       'expenses',
       '--from', '2026-01-01',
       '--to', '2026-01-31',
@@ -270,7 +281,7 @@ test('e2e friends and groups list stay parity between online and offline cache s
       '--config-dir', e2e.configDir,
       '--profile', e2e.profileName,
       'cache',
-      'export',
+      'add',
       'friends',
       '--target',
       'local',
@@ -280,7 +291,7 @@ test('e2e friends and groups list stay parity between online and offline cache s
       '--config-dir', e2e.configDir,
       '--profile', e2e.profileName,
       'cache',
-      'export',
+      'add',
       'groups',
       '--target',
       'local',
@@ -319,7 +330,7 @@ test('e2e lookup export writes categories and currencies as separate cache entit
       '--config-dir', e2e.configDir,
       '--profile', e2e.profileName,
       'cache',
-      'export',
+      'add',
       'lookup',
       '--target',
       'local',
@@ -339,6 +350,133 @@ test('e2e lookup export writes categories and currencies as separate cache entit
     const entities = new Set((JSON.parse(cacheList) as Array<{ entity: string }>).map((row) => row.entity));
     assert.equal(entities.has('categories'), true);
     assert.equal(entities.has('currencies'), true);
+  } finally {
+    await teardownE2EEnvironment(e2e);
+  }
+});
+
+test('e2e offline expenses do not hit the network after export and still work with server closed', async () => {
+  const e2e = await setupE2EEnvironment();
+
+  try {
+    await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'add',
+      'expenses',
+      '--from', '2026-01-01',
+      '--to', '2026-01-31',
+      '--target',
+      'local',
+    ], e2e.tempDir, e2e.env);
+
+    const beforeOffline = e2e.mockServer.getRequestCount();
+    await e2e.mockServer.close();
+
+    const offlineJson = await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      '--offline',
+      'expenses',
+      'list',
+      '--from', '2026-01-01',
+      '--to', '2026-01-31',
+      '--all',
+      '-o', 'json',
+    ], e2e.tempDir, e2e.env);
+
+    assert.equal(JSON.parse(offlineJson).length > 0, true);
+    assert.equal(e2e.mockServer.getRequestCount(), beforeOffline);
+  } finally {
+    await teardownE2EEnvironment(e2e);
+  }
+});
+
+test('e2e cache list exposes coverage status for expense exports', async () => {
+  const e2e = await setupE2EEnvironment();
+
+  try {
+    await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'add',
+      'expenses',
+      '--from', '2026-01-01',
+      '--to', '2026-01-31',
+      '--target',
+      'local',
+    ], e2e.tempDir, e2e.env);
+
+    const rows = JSON.parse(await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'list',
+      '--target',
+      'local',
+      '-o',
+      'json',
+    ], e2e.tempDir, e2e.env)) as Array<{ entity: string; coverageStatus?: string }>;
+
+    const expenseRow = rows.find((row) => row.entity === 'expenses');
+    assert.equal(expenseRow?.coverageStatus, 'full');
+  } finally {
+    await teardownE2EEnvironment(e2e);
+  }
+});
+
+test('e2e cache delete removes a cache entry by id', async () => {
+  const e2e = await setupE2EEnvironment();
+
+  try {
+    await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'add',
+      'friends',
+      '--target',
+      'local',
+    ], e2e.tempDir, e2e.env);
+
+    const initialRows = JSON.parse(await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'list',
+      '--target',
+      'local',
+      '-o',
+      'json',
+    ], e2e.tempDir, e2e.env)) as Array<{ batchId: string; entity: string }>;
+
+    const cacheEntry = initialRows.find((row) => row.entity === 'friends');
+    assert.ok(cacheEntry);
+
+    await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'delete',
+      cacheEntry.batchId,
+      '--target',
+      'local',
+    ], e2e.tempDir, e2e.env);
+
+    const finalRows = JSON.parse(await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'list',
+      '--target',
+      'local',
+      '-o',
+      'json',
+    ], e2e.tempDir, e2e.env)) as Array<Record<string, unknown>>;
+
+    assert.equal(finalRows.length, 0);
   } finally {
     await teardownE2EEnvironment(e2e);
   }

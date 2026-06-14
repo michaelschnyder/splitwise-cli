@@ -44,6 +44,7 @@ Configuration is stored under `~/.splitwise-cli/`.
 | Groups | List groups and fetch group details | `list`, `get` | [Groups](#groups) |
 | Expenses | Query expenses with date/person/group filters | `list`, `get` | [Expenses](#expenses) |
 | Profiles | Manage profile restrictions, active profile, and lock state | `list`, `show`, `create`, `edit`, `select`, `remove`, `validate`, `lock` | [Profiles](#profiles) |
+| Cache | Export immutable snapshots and inspect offline cache state | `export`, `list`, `refresh`, `status` | [Cache & Offline](#cache--offline) |
 | Skills | List/install/create assistant skill files | `list`, `path`, `install`, `create` | [Skills](#skills) |
 
 For global log flags, output streams, and debug behavior, see [Console Logging](#console-logging).
@@ -57,6 +58,11 @@ Global credential selection:
 
 - `-c, --credential <name>` selects a credential for the current command.
 - Resolution order: explicit `--credential` -> profile credential -> active login credential -> default login credential.
+
+Global offline selection:
+
+- `--offline` forces cache-only reads and prevents network access.
+- Resolution order: explicit `--offline` -> profile `offlineEnabled` -> online by default.
 
 ## Output Formats
 
@@ -268,11 +274,69 @@ splitwise-cli profiles lock work
 | `--clear-expense-friend-limit` | set expense friend limit to unrestricted (`null`) |
 | `--profile-credential <name>` | bind a profile to a credential |
 | `--clear-profile-credential` | remove profile credential binding |
+| `--offline-enabled <yes|no>` | enable cache-only mode by default for this profile |
+| `--preferred-cache-target <target>` | preferred cache target: `local`, `user`, `global` |
+| `--clear-preferred-cache-target` | clear profile cache target preference |
+| `--api-endpoint <url>` | override the Splitwise API base URL |
+| `--clear-api-endpoint` | clear the API endpoint override |
 
 ### Lock Recovery
 
 When a profile is locked and an operation is blocked, the CLI prints the exact profile file path.
 To recover, edit that file and set `"locked": false`, or remove the file manually.
+
+## Cache & Offline
+
+Use the `cache` command group to export immutable local snapshots and query data offline.
+
+### Cache Targets
+
+- `local`: workspace-local cache under the current working directory
+- `user`: cache under `~/.splitwise-cli/cache`
+- `global`: appdata-based cache area
+
+### Commands
+
+```bash
+splitwise-cli cache add expenses --from -30d --target local
+splitwise-cli cache add lookup --target user
+splitwise-cli cache refresh expenses --target local
+splitwise-cli cache delete 01hzzzzzzzzzzzzzzzzzzzzzzz --target local
+splitwise-cli cache delete --all --target local
+splitwise-cli cache list --target local
+splitwise-cli cache status --target local
+```
+
+`cache add` and `cache refresh` create immutable cache directories. Writes are staged into temporary cache folders and finalized by rename, so incomplete exports are not exposed as valid cache snapshots.
+
+### Offline Workflow
+
+```bash
+# add while online
+splitwise-cli cache add all --target local
+
+# read from cache only
+splitwise-cli --offline expenses list --from -30d --all
+splitwise-cli --offline friends list
+splitwise-cli --offline groups list
+```
+
+Offline behavior:
+
+- no HTTP requests are made when `--offline` is effective
+- partial expense coverage returns available rows plus warnings for uncovered date ranges
+- missing expense cache produces an actionable error with an example `cache add` command
+
+### Coverage and Refresh
+
+- `cache list` includes expense coverage windows and a derived coverage status
+- `cache refresh expenses` reuses the latest compatible scope for the same account/profile
+- refresh prefers both `created_at` and `updated_at` cursors when available and falls back to a bounded overlap window when they are not
+
+### Notes
+
+- `lookup` is stored as separate `categories` and `currencies` entities
+- expense exports also persist comments and a lightweight groups snapshot for offline name resolution
 
 ## Skills
 
@@ -334,6 +398,12 @@ HTTP client logging:
 - Request/response lifecycle logs include method, URL, status code, duration, and attempt.
 - Error logs include method, URL, duration, and error message.
 - Headers and response/request content are intentionally not logged.
+
+Cache/offline diagnostics:
+
+- add and refresh operations emit cache diagnostics under the `cache` tag
+- debug/trace logging includes refresh strategy and staged batch lifecycle details
+- offline expense warnings are emitted to `stderr` so structured output remains machine-readable
 
 Color behavior:
 

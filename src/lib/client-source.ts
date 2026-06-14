@@ -63,6 +63,7 @@ function makeCurrentUserFromCredential(credential: Credential): any {
 
 export function createOfflineSplitwiseClient(input: {
   target: CacheTarget;
+  sourceLabel: string;
   profileName: string;
   profile: Profile;
   credentialName: string;
@@ -70,6 +71,23 @@ export function createOfflineSplitwiseClient(input: {
 }): unknown {
   const accountUserId = input.credential.userId;
   let pendingWarnings: string[] = [];
+
+  const requestScopeHint = (params?: OfflineExpenseRequest): string => {
+    const parts = [
+      params?.from ? `--from ${params.from}` : '',
+      params?.to ? `--to ${params.to}` : '',
+      params?.groupId !== undefined ? `--group ${params.groupId}` : '',
+      params?.friendId !== undefined ? `--friend ${params.friendId}` : '',
+    ].filter(Boolean);
+    return parts.length > 0 ? ` ${parts.join(' ')}` : '';
+  };
+
+  const throwOfflineMiss = (entity: 'expenses' | 'friends' | 'groups', scopeHint = ''): never => {
+    throw new Error(
+      `Offline cache miss for ${entity}. No compatible cached snapshot is available for profile "${input.profileName}" in ${input.sourceLabel}. `
+      + `Populate cache with: splitwise-cli cache add ${entity} --target ${input.target}${scopeHint}`,
+    );
+  };
 
   const friends = () => loadLatestFriends(input.target, accountUserId, input.profileName);
   const groups = () => loadLatestGroups(input.target, accountUserId, input.profileName);
@@ -84,6 +102,9 @@ export function createOfflineSplitwiseClient(input: {
           groupId: params?.groupId,
           friendId: params?.friendId,
         }, input.profileName);
+        if (result.compatibleEntryCount === 0) {
+          throwOfflineMiss('expenses', requestScopeHint(params));
+        }
         pendingWarnings = result.warnings;
         return makePagedResult(result.expenses, params?.limit, params?.offset);
       },
