@@ -2,12 +2,37 @@ import { Splitwise } from 'splitwise';
 import type { Command } from 'commander';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { createOfflineSplitwiseClient } from './client-source.js';
 import { createLogger } from './output.js';
 
-const CONFIG_DIR = join(homedir(), '.splitwise-cli');
-const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
-const PROFILES_DIR = join(CONFIG_DIR, 'profiles');
+const DEFAULT_CONFIG_DIR = join(homedir(), '.splitwise-cli');
+let configDirOverride: string | undefined;
+
+function resolveConfigDirPath(useOverride = true): string {
+  if (useOverride && configDirOverride !== undefined) return configDirOverride;
+  return DEFAULT_CONFIG_DIR;
+}
+
+function configPath(root = resolveConfigDirPath()): string {
+  return join(root, 'config.json');
+}
+
+function profilesDir(root = resolveConfigDirPath()): string {
+  return join(root, 'profiles');
+}
+
+function profilePathAtRoot(root: string, name: string): string {
+  return join(profilesDir(root), `${name}.json`);
+}
+
+function profilePath(name: string): string {
+  return profilePathAtRoot(resolveConfigDirPath(), name);
+}
+
+function profileFileExistsAtRoot(root: string, name: string): boolean {
+  return existsSync(profilePathAtRoot(root, name));
+}
 
 const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const CREDENTIAL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
@@ -46,6 +71,7 @@ export interface Profile {
   credential?: string;
   offlineEnabled?: boolean;
   preferredCacheTarget?: CacheTarget;
+  apiEndpoint?: string;
 }
 
 export type ResolvedProfile = {
@@ -69,6 +95,12 @@ type ResponseHookEvent = RequestHookEvent & {
 type ErrorHookEvent = RequestHookEvent & {
   error: unknown;
   durationMs: number;
+};
+
+export type DataClient = Splitwise & {
+  getSourceKind: () => 'api' | 'cache';
+  getSourceLabel: () => string;
+  consumeWarnings: () => string[];
 };
 
 function statusMessage(status: number): string {
@@ -120,10 +152,6 @@ function defaultProfile(): Profile {
 
 function parseJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, 'utf-8')) as T;
-}
-
-function profilePath(name: string): string {
-  return join(PROFILES_DIR, `${name}.json`);
 }
 
 function profileFileExists(name: string): boolean {
@@ -199,6 +227,18 @@ function profileValidationErrors(name: string, profile: Profile): string[] {
   if (profile.preferredCacheTarget !== undefined) {
     if (!['local', 'user', 'global'].includes(profile.preferredCacheTarget)) {
       errors.push('preferredCacheTarget must be one of: local, user, global.');
+    }
+  }
+
+  if (profile.apiEndpoint !== undefined) {
+    if (typeof profile.apiEndpoint !== 'string' || profile.apiEndpoint.trim().length === 0) {
+      errors.push('apiEndpoint must be a non-empty string when provided.');
+    } else {
+      try {
+        new URL(profile.apiEndpoint);
+      } catch {
+        errors.push('apiEndpoint must be a valid absolute URL.');
+      }
     }
   }
 
@@ -303,10 +343,15 @@ function restrictionAllows(list: number[] | null | undefined, id: number): boole
 }
 
 function loadProfileFromDisk(name: string): Profile {
-  if (name === 'default' && !profileFileExists(name)) {
+  const root = resolveConfigDirPath();
+  return loadProfileFromDiskAtRoot(root, name);
+}
+
+function loadProfileFromDiskAtRoot(root: string, name: string): Profile {
+  if (name === 'default' && !profileFileExistsAtRoot(root, name)) {
     return defaultProfile();
   }
-  const path = profilePath(name);
+  const path = profilePathAtRoot(root, name);
   return parseJson<Profile>(path);
 }
 
@@ -339,16 +384,18 @@ function ensureProfileSwitchAllowedOrExit(
 }
 
 export function loadConfig(): Config {
-  if (!existsSync(CONFIG_PATH)) return {};
-  const parsed = parseJson<Config>(CONFIG_PATH);
+  const path = configPath();
+  if (!existsSync(path)) return {};
+  const parsed = parseJson<Config>(path);
   return normalizeCredentialPointers(migrateLegacyCredentials(parsed));
 }
 
 export function saveConfig(config: Config): void {
-  mkdirSync(CONFIG_DIR, { recursive: true });
+  const root = resolveConfigDirPath();
+  mkdirSync(root, { recursive: true });
   const normalized = normalizeCredentialPointers(config);
   const sanitized = sanitizeConfigForSave(normalized);
-  writeFileSync(CONFIG_PATH, JSON.stringify(sanitized, null, 2), { mode: 0o600 });
+  writeFileSync(configPath(root), JSON.stringify(sanitized, null, 2), { mode: 0o600 });
 }
 
 export function listCredentialNames(): string[] {
@@ -361,7 +408,7 @@ export function getCredential(name: string, cmd?: Command): Credential {
   const credential = config.credentials?.[name];
   if (!credential) {
     const logger = createLogger(cmd, 'login');
-    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    logger.error(`Credential "${name}" does not exist in ${configPath()}.`);
     process.exit(1);
   }
   return credential;
@@ -423,7 +470,7 @@ export function setActiveCredential(name: string, cmd?: Command): void {
   const config = loadConfig();
   if (!config.credentials?.[name]) {
     const logger = createLogger(cmd, 'login');
-    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    logger.error(`Credential "${name}" does not exist in ${configPath()}.`);
     process.exit(1);
   }
   config.activeCredential = name;
@@ -435,7 +482,7 @@ export function setDefaultCredential(name: string, cmd?: Command): void {
   const config = loadConfig();
   if (!config.credentials?.[name]) {
     const logger = createLogger(cmd, 'login');
-    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    logger.error(`Credential "${name}" does not exist in ${configPath()}.`);
     process.exit(1);
   }
   config.defaultCredential = name;
@@ -447,7 +494,7 @@ export function removeCredential(name: string, cmd?: Command): void {
   const config = loadConfig();
   if (!config.credentials?.[name]) {
     const logger = createLogger(cmd, 'login');
-    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    logger.error(`Credential "${name}" does not exist in ${configPath()}.`);
     process.exit(1);
   }
 
@@ -496,7 +543,7 @@ export function resolveCredentialName(cmd?: Command, explicitName?: string): str
   ensureValidCredentialNameOrExit(selected, cmd);
   if (!config.credentials?.[selected]) {
     const logger = createLogger(cmd, 'login');
-    logger.error(`Credential "${selected}" does not exist in ${CONFIG_PATH}.`);
+    logger.error(`Credential "${selected}" does not exist in ${configPath()}.`);
     process.exit(1);
   }
 
@@ -522,7 +569,7 @@ export function resolveCredential(cmd?: Command, explicitName?: string): { name:
   const credential = config.credentials?.[name];
   if (!credential) {
     const logger = createLogger(cmd, 'login');
-    logger.error(`Credential "${name}" does not exist in ${CONFIG_PATH}.`);
+    logger.error(`Credential "${name}" does not exist in ${configPath()}.`);
     process.exit(1);
   }
   return { name, credential };
@@ -575,15 +622,52 @@ export function maskCredentialToken(credential: Credential): string {
 }
 
 export function getConfigPath(): string {
-  return CONFIG_PATH;
+  return configPath();
 }
 
 export function getConfigDirPath(): string {
-  return CONFIG_DIR;
+  return resolveConfigDirPath();
 }
 
 export function getProfilesDirPath(): string {
-  return PROFILES_DIR;
+  return profilesDir();
+}
+
+function anyLockedProfileExistsInDefaultRoot(): boolean {
+  const root = DEFAULT_CONFIG_DIR;
+  if (!existsSync(root)) return false;
+  for (const name of listProfileNamesFromRoot(root)) {
+    const profile = loadProfileFromDiskAtRoot(root, name);
+    if (profile.locked) return true;
+  }
+  return false;
+}
+
+function listProfileNamesFromRoot(root: string): string[] {
+  const names = new Set<string>(['default']);
+  const dir = profilesDir(root);
+  if (existsSync(dir)) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith('.json')) continue;
+      names.add(entry.name.slice(0, -5));
+    }
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+export function setConfigDirOverride(configDir?: string): void {
+  if (configDir === undefined || configDir.trim().length === 0) {
+    configDirOverride = undefined;
+    return;
+  }
+
+  const next = resolve(configDir);
+  if (next !== DEFAULT_CONFIG_DIR && anyLockedProfileExistsInDefaultRoot()) {
+    throw new Error(`Cannot override the config directory while a locked profile exists in ${DEFAULT_CONFIG_DIR}. Unlock it first.`);
+  }
+
+  configDirOverride = next;
 }
 
 export function resolveEffectiveOffline(input: {
@@ -614,18 +698,23 @@ export function resolveOfflineMode(cmd?: Command): boolean {
   });
 }
 
+export function resolveApiEndpoint(cmd?: Command): string | undefined {
+  const { profile } = resolveProfile(cmd);
+  return profile.apiEndpoint?.trim() || undefined;
+}
+
 export function getLocalCacheRootPath(): string {
   return join(process.cwd(), '.splitwise');
 }
 
 export function getUserCacheRootPath(): string {
-  return join(CONFIG_DIR, 'cache');
+  return join(resolveConfigDirPath(), 'cache');
 }
 
 export function getGlobalCacheRootPath(): string {
   return process.env.APPDATA
     ? join(process.env.APPDATA, 'splitwise-cli')
-    : join(CONFIG_DIR, 'cache-global');
+    : join(resolveConfigDirPath(), 'cache-global');
 }
 
 export function getCacheRootPath(target: CacheTarget): string {
@@ -657,15 +746,7 @@ export function getProfilePath(name: string): string {
 }
 
 export function listProfileNames(): string[] {
-  const names = new Set<string>(['default']);
-  if (existsSync(PROFILES_DIR)) {
-    for (const entry of readdirSync(PROFILES_DIR, { withFileTypes: true })) {
-      if (!entry.isFile()) continue;
-      if (!entry.name.endsWith('.json')) continue;
-      names.add(entry.name.slice(0, -5));
-    }
-  }
-  return [...names].sort((a, b) => a.localeCompare(b));
+  return listProfileNamesFromRoot(resolveConfigDirPath());
 }
 
 export function loadProfile(name: string, cmd?: Command): Profile {
@@ -683,8 +764,9 @@ export function saveProfile(name: string, profile: Profile, cmd?: Command): void
     process.exit(1);
   }
 
-  mkdirSync(PROFILES_DIR, { recursive: true });
-  writeFileSync(profilePath(name), JSON.stringify(profile, null, 2), { mode: 0o600 });
+  const root = resolveConfigDirPath();
+  mkdirSync(profilesDir(root), { recursive: true });
+  writeFileSync(profilePathAtRoot(root, name), JSON.stringify(profile, null, 2), { mode: 0o600 });
 }
 
 export function removeProfile(name: string, cmd?: Command): void {
@@ -853,13 +935,46 @@ export function ensureExpenseOperationAllowed(
 }
 
 export function getClient(cmd?: Command, explicitCredentialName?: string): Splitwise {
+  return getDataClient(cmd, explicitCredentialName);
+}
+
+function attachClientMetadata(
+  client: Splitwise,
+  input: {
+    sourceKind: 'api' | 'cache';
+    sourceLabel: string;
+    consumeWarnings?: () => string[];
+  },
+): DataClient {
+  const typed = client as DataClient;
+  typed.getSourceKind = () => input.sourceKind;
+  typed.getSourceLabel = () => input.sourceLabel;
+  typed.consumeWarnings = () => input.consumeWarnings?.() ?? [];
+  return typed;
+}
+
+export function getDataClient(cmd?: Command, explicitCredentialName?: string): DataClient {
   const logger = createLogger(cmd, 'client');
-  if (resolveOfflineMode(cmd)) {
-    logger.error('Offline mode is active. This command cannot contact Splitwise. Export data first with the cache feature or rerun without --offline.');
-    process.exit(1);
-  }
   const hooks = createHttpHooks(logger);
   const { name, credential } = resolveCredential(cmd, explicitCredentialName);
+  const offline = resolveOfflineMode(cmd);
+  if (offline) {
+    const target = resolveCacheTarget(cmd);
+    const offlineClient = createOfflineSplitwiseClient({
+      target: resolveCacheTarget(cmd),
+      profileName: resolveProfile(cmd).name,
+      profile: resolveProfile(cmd).profile,
+      credentialName: name,
+      credential,
+    }) as Splitwise & { consumeOfflineWarnings?: () => string[] };
+
+    return attachClientMetadata(offlineClient, {
+      sourceKind: 'cache',
+      sourceLabel: getCacheRootPath(target),
+      consumeWarnings: () => offlineClient.consumeOfflineWarnings?.() ?? [],
+    });
+  }
+
   const trackedHooks = {
     ...hooks,
     onResponse(event: ResponseHookEvent) {
@@ -869,14 +984,24 @@ export function getClient(cmd?: Command, explicitCredentialName?: string): Split
       }
     },
   };
+  const resolvedBaseUrl = resolveApiEndpoint(cmd);
   if (credential.accessToken) {
-    return new Splitwise({ accessToken: credential.accessToken, hooks: trackedHooks });
+    const client = new Splitwise({ accessToken: credential.accessToken, ...(resolvedBaseUrl !== undefined && { baseUrl: resolvedBaseUrl }), hooks: trackedHooks });
+    return attachClientMetadata(client, {
+      sourceKind: 'api',
+      sourceLabel: 'Splitwise API',
+    });
   }
   if (credential.consumerKey && credential.consumerSecret) {
-    return new Splitwise({
+    const client = new Splitwise({
       consumerKey: credential.consumerKey,
       consumerSecret: credential.consumerSecret,
+      ...(resolvedBaseUrl !== undefined && { baseUrl: resolvedBaseUrl }),
       hooks: trackedHooks,
+    });
+    return attachClientMetadata(client, {
+      sourceKind: 'api',
+      sourceLabel: 'Splitwise API',
     });
   }
   logger.error(`Credential "${name}" is incomplete. Run splitwise-cli login token <token> or splitwise-cli login oauth <consumerKey> <consumerSecret>.`);

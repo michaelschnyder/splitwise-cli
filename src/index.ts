@@ -9,7 +9,7 @@ import { registerExpenses } from './commands/expenses.js';
 import { registerSkills } from './commands/skills.js';
 import { registerProfiles } from './commands/profiles.js';
 import { registerCache } from './commands/cache.js';
-import { loadConfig, maskCredentialToken, resolveCredentialName, resolveProfile, validateSelectedProfileOrExit } from './lib/config.js';
+import { loadConfig, maskCredentialToken, resolveCredentialName, resolveProfile, setConfigDirOverride, validateSelectedProfileOrExit } from './lib/config.js';
 import { addCredentialOption, addLoggingOptions, addOfflineOption, addProfileOption, createLogger } from './lib/output.js';
 
 const program = new Command();
@@ -23,8 +23,30 @@ addLoggingOptions(program);
 addProfileOption(program);
 addCredentialOption(program);
 addOfflineOption(program);
+program.option('--config-dir <path>', 'Override the Splitwise CLI config directory');
+
+function resolveConfigDirFromArgv(argv: string[]): string | undefined {
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg.startsWith('--config-dir=')) {
+      return arg.slice('--config-dir='.length);
+    }
+    if (arg === '--config-dir') {
+      return argv[index + 1];
+    }
+  }
+  return undefined;
+}
 
 const argv = process.argv.slice(2);
+try {
+  setConfigDirOverride(resolveConfigDirFromArgv(argv));
+} catch (err) {
+  const logger = createLogger();
+  logger.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
+
 const asksForHelpOrVersion = argv.includes('-h') || argv.includes('--help') || argv.includes('-V') || argv.includes('--version');
 if (!asksForHelpOrVersion) {
   validateSelectedProfileOrExit();

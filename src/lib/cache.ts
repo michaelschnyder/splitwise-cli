@@ -5,7 +5,7 @@ import type { Category, Comment, Currency, Expense, Friend, Group } from 'splitw
 import type { CacheTarget } from './config.js';
 import { ensureCacheRoot, getCacheManifestPath, getCacheRootPath } from './config.js';
 
-export type CacheEntity = 'expenses' | 'friends' | 'groups' | 'lookup' | 'all';
+export type CacheEntity = 'expenses' | 'comments' | 'friends' | 'groups' | 'categories' | 'currencies' | 'lookup' | 'all';
 
 export type CacheScope = {
   from?: string;
@@ -58,8 +58,11 @@ export interface CacheManifest {
 export interface ExpensesCachePayload {
   entity: 'expenses';
   items: Expense[];
-  commentsByExpense: Record<string, Comment[]>;
-  groupNamesById: Record<string, string>;
+}
+
+export interface CommentsCachePayload {
+  entity: 'comments';
+  items: Record<string, Comment[]>;
 }
 
 export interface FriendsCachePayload {
@@ -72,15 +75,17 @@ export interface GroupsCachePayload {
   items: Group[];
 }
 
-export interface LookupCachePayload {
-  entity: 'lookup';
-  items: {
-    categories: Category[];
-    currencies: Currency[];
-  };
+export interface CategoriesCachePayload {
+  entity: 'categories';
+  items: Category[];
 }
 
-export type CachePayload = ExpensesCachePayload | FriendsCachePayload | GroupsCachePayload | LookupCachePayload;
+export interface CurrenciesCachePayload {
+  entity: 'currencies';
+  items: Currency[];
+}
+
+export type CachePayload = ExpensesCachePayload | CommentsCachePayload | FriendsCachePayload | GroupsCachePayload | CategoriesCachePayload | CurrenciesCachePayload;
 
 export interface OfflineExpenseRequest {
   from?: string;
@@ -234,7 +239,9 @@ export function buildCacheCoverage(payload: CachePayload): CacheCoverage {
 }
 
 export function cacheRowCount(payload: CachePayload): number {
-  if (payload.entity === 'lookup') return payload.items.categories.length + payload.items.currencies.length;
+  if (payload.entity === 'comments') {
+    return Object.values(payload.items).reduce((sum, comments) => sum + comments.length, 0);
+  }
   return payload.items.length;
 }
 
@@ -402,14 +409,24 @@ export function uncoveredExpenseRanges(entries: CacheManifestEntry[], request: O
   return gaps;
 }
 
-export function resolveOfflineExpenses(target: CacheTarget, accountUserId: number | undefined, request: OfflineExpenseRequest): OfflineExpenseResult {
+export function resolveOfflineExpenses(
+  target: CacheTarget,
+  accountUserId: number | undefined,
+  request: OfflineExpenseRequest,
+  profileName?: string,
+): OfflineExpenseResult {
+  const groupNamesById = loadLatestGroups(target, accountUserId, profileName)
+    .reduce<Record<string, string>>((acc, group) => {
+      acc[String(group.id)] = group.name;
+      return acc;
+    }, {});
+
+  const commentsByExpense = loadLatestComments(target, accountUserId, profileName);
   const compatibleEntries = listCacheEntries(target, 'expenses')
     .filter((entry) => entry.accountUserId === accountUserId)
     .filter((entry) => expenseScopeCompatible(entry, request));
 
   const expensesById = new Map<number, Expense>();
-  const commentsByExpense: Record<string, Comment[]> = {};
-  const groupNamesById: Record<string, string> = {};
   const sourceEntries: CacheManifestEntry[] = [];
 
   for (const entry of compatibleEntries) {
@@ -419,19 +436,26 @@ export function resolveOfflineExpenses(target: CacheTarget, accountUserId: numbe
       : payload.items.filter((expense) => expenseMatchesRequest(expense, request));
     if (filtered.length === 0) continue;
     sourceEntries.push(entry);
-    Object.assign(groupNamesById, payload.groupNamesById ?? {});
     for (const expense of filtered) {
       if (!expensesById.has(expense.id)) {
         expensesById.set(expense.id, expense);
-        commentsByExpense[String(expense.id)] = payload.commentsByExpense[String(expense.id)] ?? [];
       }
     }
   }
 
+  const expenses = [...expensesById.values()].sort((left, right) => right.date.localeCompare(left.date));
   const warnings = uncoveredExpenseRanges(sourceEntries, request)
     .map((range) => `Offline cache does not fully cover ${range}. Returning partial results.`);
 
-  const expenses = [...expensesById.values()].sort((left, right) => right.date.localeCompare(left.date));
+  const unresolvedGroupCount = expenses
+    .filter((expense) => expense.groupId !== null)
+    .filter((expense) => expense.groupId !== null && !(String(expense.groupId) in groupNamesById))
+    .length;
+
+  if (unresolvedGroupCount > 0) {
+    warnings.push(`Offline cache could not resolve ${unresolvedGroupCount} group names. Cache may be stale; export groups to refresh names.`);
+  }
+
   return { expenses, commentsByExpense, groupNamesById, warnings, sourceEntries };
 }
 
@@ -459,12 +483,37 @@ export function loadLatestFriends(target: CacheTarget, accountUserId: number | u
   return loadCachePayload<FriendsCachePayload>(target, entry).items;
 }
 
-export function loadLatestLookup(target: CacheTarget, accountUserId: number | undefined, profileName?: string): LookupCachePayload['items'] | null {
-  const exact = findLatestCacheEntry(target, { entity: 'lookup', accountUserId, profileName });
-  if (exact) return loadCachePayload<LookupCachePayload>(target, exact).items;
-  const fallback = listCacheEntries(target, 'lookup')[0];
-  if (!fallback) return null;
-  return loadCachePayload<LookupCachePayload>(target, fallback).items;
+export function loadLatestLookup(
+  target: CacheTarget,
+  accountUserId: number | undefined,
+  profileName?: string,
+): { categories: Category[]; currencies: Currency[] } | null {
+  const categories = loadLatestCategories(target, accountUserId, profileName);
+  const currencies = loadLatestCurrencies(target, accountUserId, profileName);
+  if (categories.length === 0 && currencies.length === 0) return null;
+  return { categories, currencies };
+}
+
+export function loadLatestCategories(target: CacheTarget, accountUserId: number | undefined, profileName?: string): Category[] {
+  const exact = findLatestCacheEntry(target, { entity: 'categories', accountUserId, profileName });
+  if (exact) return loadCachePayload<CategoriesCachePayload>(target, exact).items;
+  const fallback = listCacheEntries(target, 'categories')[0];
+  if (!fallback) return [];
+  return loadCachePayload<CategoriesCachePayload>(target, fallback).items;
+}
+
+export function loadLatestCurrencies(target: CacheTarget, accountUserId: number | undefined, profileName?: string): Currency[] {
+  const exact = findLatestCacheEntry(target, { entity: 'currencies', accountUserId, profileName });
+  if (exact) return loadCachePayload<CurrenciesCachePayload>(target, exact).items;
+  const fallback = listCacheEntries(target, 'currencies')[0];
+  if (!fallback) return [];
+  return loadCachePayload<CurrenciesCachePayload>(target, fallback).items;
+}
+
+export function loadLatestComments(target: CacheTarget, accountUserId: number | undefined, profileName?: string): Record<string, Comment[]> {
+  const entry = findLatestCacheEntry(target, { entity: 'comments', accountUserId, profileName });
+  if (!entry) return {};
+  return loadCachePayload<CommentsCachePayload>(target, entry).items;
 }
 
 export function findOfflineExpenseById(target: CacheTarget, accountUserId: number | undefined, expenseId: number): {
@@ -472,6 +521,7 @@ export function findOfflineExpenseById(target: CacheTarget, accountUserId: numbe
   comments: Comment[];
   entry: CacheManifestEntry;
 } | null {
+  const commentsByExpense = loadLatestComments(target, accountUserId);
   const entries = listCacheEntries(target, 'expenses').filter((entry) => entry.accountUserId === accountUserId);
   for (const entry of entries) {
     const payload = loadCachePayload<ExpensesCachePayload>(target, entry);
@@ -479,7 +529,7 @@ export function findOfflineExpenseById(target: CacheTarget, accountUserId: numbe
     if (expense) {
       return {
         expense,
-        comments: payload.commentsByExpense[String(expenseId)] ?? [],
+        comments: commentsByExpense[String(expenseId)] ?? [],
         entry,
       };
     }

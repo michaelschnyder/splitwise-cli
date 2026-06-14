@@ -12,7 +12,10 @@ import {
 } from '../lib/config.js';
 import {
   appendCacheEntry,
+  type CategoriesCachePayload,
+  type CommentsCachePayload,
   createCacheEntry,
+  type CurrenciesCachePayload,
   ensureCacheManifest,
   findEquivalentCacheEntry,
   findLatestCacheEntry,
@@ -23,7 +26,6 @@ import {
   type ExpensesCachePayload,
   type FriendsCachePayload,
   type GroupsCachePayload,
-  type LookupCachePayload,
   writeCachePayload,
 } from '../lib/cache.js';
 import {
@@ -126,23 +128,18 @@ async function exportExpenses(sw: ReturnType<typeof getClient>, scope: CacheScop
     items.push(...page);
   }
 
-  const groups = await sw.groups.list();
-  const groupNamesById = groups.reduce<Record<string, string>>((acc, group) => {
-    acc[String(group.id)] = group.name;
-    return acc;
-  }, {});
-
-  const commentsByExpense: Record<string, Comment[]> = {};
-  for (const expense of items) {
-    commentsByExpense[String(expense.id)] = await sw.comments.list({ expenseId: expense.id });
-  }
-
   return {
     entity: 'expenses',
     items,
-    commentsByExpense,
-    groupNamesById,
   };
+}
+
+async function exportComments(sw: ReturnType<typeof getClient>, expenses: Expense[]): Promise<CommentsCachePayload> {
+  const items: Record<string, Comment[]> = {};
+  for (const expense of expenses) {
+    items[String(expense.id)] = await sw.comments.list({ expenseId: expense.id });
+  }
+  return { entity: 'comments', items };
 }
 
 async function exportFriends(sw: ReturnType<typeof getClient>): Promise<FriendsCachePayload> {
@@ -159,18 +156,20 @@ async function exportGroups(sw: ReturnType<typeof getClient>): Promise<GroupsCac
   return { entity: 'groups', items };
 }
 
-async function exportLookup(sw: ReturnType<typeof getClient>): Promise<LookupCachePayload> {
+async function exportGroupsLite(sw: ReturnType<typeof getClient>): Promise<GroupsCachePayload> {
+  const items = await sw.groups.list();
+  return { entity: 'groups', items };
+}
+
+async function exportLookup(sw: ReturnType<typeof getClient>): Promise<{ categories: CategoriesCachePayload; currencies: CurrenciesCachePayload }> {
   const [categories, currencies] = await Promise.all([sw.categories.list(), sw.currencies.list()]);
   return {
-    entity: 'lookup',
-    items: {
-      categories: categories as Category[],
-      currencies: currencies as Currency[],
-    },
+    categories: { entity: 'categories', items: categories as Category[] },
+    currencies: { entity: 'currencies', items: currencies as Currency[] },
   };
 }
 
-async function persistExport(target: CacheTarget, batchId: string, entity: Exclude<CacheEntity, 'all'>, payload: ExpensesCachePayload | FriendsCachePayload | GroupsCachePayload | LookupCachePayload, scope: CacheScope | undefined, context: {
+async function persistExport(target: CacheTarget, batchId: string, entity: Exclude<CacheEntity, 'all'>, payload: ExpensesCachePayload | CommentsCachePayload | FriendsCachePayload | GroupsCachePayload | CategoriesCachePayload | CurrenciesCachePayload, scope: CacheScope | undefined, context: {
   profileName: string;
   credentialName: string;
   currentUser: CurrentUser;
@@ -191,11 +190,15 @@ async function persistExport(target: CacheTarget, batchId: string, entity: Exclu
   const exportedAt = new Date().toISOString();
   const requestUrl = entity === 'expenses'
     ? '/get_expenses'
+    : entity === 'comments'
+      ? '/get_comments'
     : entity === 'groups'
       ? '/get_groups'
       : entity === 'friends'
         ? '/get_friends'
-        : '/get_currencies,/get_categories';
+      : entity === 'categories'
+          ? '/get_categories'
+          : '/get_currencies';
 
   appendCacheEntry(target, createCacheEntry({
     batchId,
@@ -266,10 +269,25 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
     tasks.push(exportGroups(sw).then((payload) => persistExport(target, batchId, 'groups', payload, undefined, context)));
   }
   if (entity === 'lookup' || entity === 'all') {
-    tasks.push(exportLookup(sw).then((payload) => persistExport(target, batchId, 'lookup', payload, undefined, context)));
+    tasks.push(
+      exportLookup(sw).then(async (payloads) => {
+        await persistExport(target, batchId, 'categories', payloads.categories, undefined, context);
+        await persistExport(target, batchId, 'currencies', payloads.currencies, undefined, context);
+      }),
+    );
   }
   if (entity === 'expenses' || entity === 'all') {
-    tasks.push(exportExpenses(sw, refreshScope).then((payload) => persistExport(target, batchId, 'expenses', payload, refreshScope, context)));
+    tasks.push(
+      exportExpenses(sw, refreshScope).then(async (payload) => {
+        await persistExport(target, batchId, 'expenses', payload, refreshScope, context);
+        const commentPayload = await exportComments(sw, payload.items);
+        await persistExport(target, batchId, 'comments', commentPayload, refreshScope, context);
+        if (entity === 'expenses') {
+          const groupsPayload = await exportGroupsLite(sw);
+          await persistExport(target, batchId, 'groups', groupsPayload, undefined, context);
+        }
+      }),
+    );
   }
 
   await Promise.all(tasks);

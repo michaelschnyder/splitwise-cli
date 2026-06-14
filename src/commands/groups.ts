@@ -1,6 +1,5 @@
 import { Command } from 'commander';
-import { getClient, resolveCacheTarget, resolveCredential, resolveOfflineMode, resolveProfile, getCacheRootPath } from '../lib/config.js';
-import { loadLatestGroups } from '../lib/cache.js';
+import { getDataClient } from '../lib/config.js';
 import {
   addOutputOption, getFormat, formatName, render, renderOne, renderTuiList,
   isTuiDefault, colorize, createTuiProgress, createLogger, writeTuiInfoSpacer,
@@ -17,33 +16,7 @@ export function registerGroups(program: Command): void {
       const tuiMode = isTuiDefault(this);
       const startedAt = Date.now();
 
-      if (resolveOfflineMode(this)) {
-        const target = resolveCacheTarget(this);
-        const profileName = resolveProfile(this).name;
-        const credential = resolveCredential(this).credential;
-        const list = loadLatestGroups(target, credential.userId, profileName);
-        if (list.length === 0) {
-          logger.error(`No cached groups data found in ${getCacheRootPath(target)} for offline mode.`);
-          process.exit(1);
-        }
-
-        const rows = list.map((g) => ({ id: g.id, name: g.name, members: g.members?.length ?? 0 }));
-
-        if (tuiMode && fmt === 'table') {
-          renderTuiList(rows, {
-            intro: 'Showing groups',
-            source: getCacheRootPath(target),
-            startedAt,
-            logger,
-          });
-          return;
-        }
-
-        render(rows, fmt);
-        return;
-      }
-
-      const sw = getClient(this);
+      const sw = getDataClient(this);
       const progress = createTuiProgress(tuiMode);
       let list;
       progress.start('Fetching groups...');
@@ -59,7 +32,7 @@ export function registerGroups(program: Command): void {
       if (tuiMode && fmt === 'table') {
         renderTuiList(rows, {
           intro: 'Showing groups',
-          source: 'Splitwise API',
+          source: sw.getSourceLabel(),
           startedAt,
           logger,
         });
@@ -76,29 +49,7 @@ export function registerGroups(program: Command): void {
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
 
-      if (resolveOfflineMode(this)) {
-        const target = resolveCacheTarget(this);
-        const profileName = resolveProfile(this).name;
-        const credential = resolveCredential(this).credential;
-        const groups = loadLatestGroups(target, credential.userId, profileName);
-        const group = groups.find((entry) => entry.id === Number(id));
-        if (!group) {
-          logger.error(`Group ${id} was not found in cached data at ${getCacheRootPath(target)}.`);
-          process.exit(1);
-        }
-        renderOne(
-          {
-            id: group.id,
-            name: group.name,
-            members: group.members?.map(formatName).join(', ') ?? '',
-          },
-          fmt,
-          { tuiMode },
-        );
-        return;
-      }
-
-      const sw = getClient(this);
+      const sw = getDataClient(this);
       if (tuiMode) {
         writeTuiInfoSpacer(true);
         logger.info(`Showing group details for ${id}`);

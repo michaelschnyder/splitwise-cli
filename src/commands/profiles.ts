@@ -2,7 +2,7 @@ import prompts from 'prompts';
 import { Command } from 'commander';
 import {
   type Profile,
-  getClient,
+  getDataClient,
   getLockRecoveryMessage,
   listCredentialNames,
   getProfilePath,
@@ -40,6 +40,8 @@ type MutableProfileOptions = {
   offlineEnabled?: string;
   preferredCacheTarget?: string;
   clearPreferredCacheTarget?: boolean;
+  apiEndpoint?: string;
+  clearApiEndpoint?: boolean;
 };
 
 function parseBoolInput(field: string, value: string, logger: ReturnType<typeof createLogger>): boolean {
@@ -86,7 +88,7 @@ async function resolveIds(
   tokens: string[],
 ): Promise<number[]> {
   const logger = createLogger(cmd, 'profiles');
-  const sw = getClient(cmd);
+  const sw = getDataClient(cmd);
   const interactive = isTuiDefault(cmd) && !hasExplicitOutputOption(cmd);
 
   if (kind === 'group') {
@@ -192,6 +194,10 @@ async function applyMutableOptions(
     delete next.preferredCacheTarget;
   }
 
+  if (options.clearApiEndpoint) {
+    delete next.apiEndpoint;
+  }
+
   if (options.profileCredential !== undefined) {
     const name = options.profileCredential.trim();
     const credentials = new Set(listCredentialNames());
@@ -209,6 +215,17 @@ async function applyMutableOptions(
       process.exit(1);
     }
     next.preferredCacheTarget = value;
+  }
+
+  if (options.apiEndpoint !== undefined) {
+    const value = options.apiEndpoint.trim();
+    try {
+      new URL(value);
+    } catch {
+      logger.error('--api-endpoint must be a valid absolute URL.');
+      process.exit(1);
+    }
+    next.apiEndpoint = value;
   }
 
   if (options.limitExpensesToGroups !== undefined) {
@@ -246,7 +263,9 @@ function attachMutableOptions(cmd: Command): Command {
     .option('--profile-credential <name>', 'Bind this profile to a credential name')
     .option('--clear-profile-credential', 'Remove bound profile credential')
     .option('--preferred-cache-target <target>', 'Preferred cache target: local | user | global')
-    .option('--clear-preferred-cache-target', 'Clear the preferred cache target');
+    .option('--clear-preferred-cache-target', 'Clear the preferred cache target')
+    .option('--api-endpoint <url>', 'Override the Splitwise API base URL for this profile')
+    .option('--clear-api-endpoint', 'Clear the API endpoint override');
 }
 
 export function registerProfiles(program: Command): void {
@@ -269,6 +288,7 @@ export function registerProfiles(program: Command): void {
           locked: profile.locked ? 'yes' : 'no',
           offlineEnabled: profile.offlineEnabled ? 'yes' : 'no',
           preferredCacheTarget: profile.preferredCacheTarget ?? '',
+          apiEndpoint: profile.apiEndpoint ?? '',
           createExpenses: profile.createExpenses ?? true,
           updateExpenses: profile.updateExpenses ?? true,
           deleteExpenses: profile.deleteExpenses ?? true,
@@ -306,6 +326,7 @@ export function registerProfiles(program: Command): void {
           locked: profile.locked ?? false,
           offlineEnabled: profile.offlineEnabled ?? false,
           preferredCacheTarget: profile.preferredCacheTarget ?? null,
+          apiEndpoint: profile.apiEndpoint ?? null,
           createExpenses: profile.createExpenses,
           updateExpenses: profile.updateExpenses,
           deleteExpenses: profile.deleteExpenses,
@@ -379,7 +400,7 @@ export function registerProfiles(program: Command): void {
 
       validateSelectedProfileOrExit(this);
 
-      const sw = getClient(this);
+      const sw = getDataClient(this);
       const [groups, friends] = await Promise.all([sw.groups.list(), sw.friends.list()]);
       const groupIds = new Set(groups.map((g) => g.id));
       const friendIds = new Set(friends.map((f) => f.id));

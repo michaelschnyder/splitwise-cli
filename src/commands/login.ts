@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import {
   ensureLoginWritable,
-  getClient,
+  getDataClient,
   listCredentialNames,
   loadConfig,
   maskCredentialToken,
@@ -141,7 +141,7 @@ export function registerLogin(program: Command): void {
     .description('Show the current user for the resolved login')
     .action(async function (this: Command) {
       const { name: credentialName } = resolveCredential(this);
-      const sw = getClient(this);
+      const sw = getDataClient(this);
       const logger = createLogger(this, 'login');
       const fmt = getFormat(this);
       const tuiMode = isTuiDefault(this);
@@ -173,7 +173,7 @@ export function registerLogin(program: Command): void {
     .action(async function (this: Command, name?: string) {
       const logger = createLogger(this, 'login');
       const targetName = resolveCredential(this, name).name;
-      const sw = getClient(this, name);
+      const sw = getDataClient(this, name);
       try {
         const me = await sw.users.getCurrent();
         setCredentialIdentity(targetName, me.id, formatName(me));
