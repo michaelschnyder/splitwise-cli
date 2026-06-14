@@ -5,14 +5,24 @@ import { spawnSync } from 'node:child_process';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageJsonPath = join(root, 'package.json');
-const skillsRoot = join(root, 'src', 'skills');
+const defaultSkillsRoot = join(root, 'src', 'skills');
+const targetDirArgIndex = process.argv.findIndex((arg) => arg === '--dir');
+const targetDir = targetDirArgIndex >= 0
+  ? process.argv[targetDirArgIndex + 1]
+  : undefined;
+
+if (targetDirArgIndex >= 0 && (!targetDir || targetDir.startsWith('--'))) {
+  throw new Error('Expected a directory path after --dir');
+}
 
 if (!existsSync(packageJsonPath)) {
   throw new Error(`Missing package.json at ${packageJsonPath}`);
 }
 
-if (!existsSync(skillsRoot)) {
-  throw new Error(`Missing skills directory at ${skillsRoot}`);
+const resolvedSkillsRoot = targetDir ? join(root, targetDir) : defaultSkillsRoot;
+
+if (!existsSync(resolvedSkillsRoot)) {
+  throw new Error(`Missing skills directory at ${resolvedSkillsRoot}`);
 }
 
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
@@ -39,7 +49,7 @@ function collectSkillFiles(dir) {
   return files;
 }
 
-const skillFiles = collectSkillFiles(skillsRoot);
+const skillFiles = collectSkillFiles(resolvedSkillsRoot);
 const updatedFiles = [];
 
 for (const filePath of skillFiles) {
@@ -61,7 +71,7 @@ if (updatedFiles.length === 0) {
 }
 
 const gitDir = join(root, '.git');
-if (existsSync(gitDir)) {
+if (existsSync(gitDir) && resolvedSkillsRoot === defaultSkillsRoot) {
   const addResult = spawnSync('git', ['add', ...updatedFiles], {
     cwd: root,
     stdio: 'inherit',
@@ -72,4 +82,4 @@ if (existsSync(gitDir)) {
   }
 }
 
-console.log(`Updated skill versions to ${nextVersion} in ${updatedFiles.length} file(s).`);
+console.log(`Updated skill versions to ${nextVersion} in ${updatedFiles.length} file(s) under ${resolvedSkillsRoot}.`);

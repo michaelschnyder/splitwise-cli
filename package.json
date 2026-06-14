@@ -8,8 +8,12 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "prepare:skills": "node scripts/copy-skills.mjs && node scripts/sync-skill-versions.mjs --dir dist/skills",
+    "build:package": "npm run build && npm run prepare:skills",
+    "prepack": "npm run build:package",
     "version": "node scripts/sync-skill-versions.mjs",
-    "build": "tsc && node scripts/copy-skills.mjs",
+    "release": "npm publish",
     "start": "node dist/index.js",
     "test": "tsx --test tests/**/*.test.ts"
   },

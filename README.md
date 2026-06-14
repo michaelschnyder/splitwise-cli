@@ -362,3 +362,10 @@ npm install
 npm run build
 npm run dev -- expenses list --from -7d
 ```
+
+Packaging workflow:
+
+- `npm run build` compiles TypeScript only (fast local validation, no skill copy).
+- `npm run build:package` compiles, copies skills to `dist/skills`, and syncs skill metadata version to `package.json`.
+- `npm pack` and `npm publish` run `prepack` automatically, so published tarballs always contain versioned skills.
+- `npm run release` is a convenience wrapper for `npm publish`.
