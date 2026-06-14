@@ -1,16 +1,16 @@
 ---
 name: splitwise-expenses
-description: Query and inspect Splitwise expenses with filters, pagination, and formats.
+description: Query, create, delete, and import Splitwise expenses with filters, pagination, and formats.
 metadata:
   version: "1.1.0"
   author: splitwise-cli
-  tags: splitwise,expenses,filters,pagination
+  tags: splitwise,expenses,filters,pagination,write,import
   alwaysApply: "false"
 ---
 
 # Splitwise Expenses
 
-Query recent expenses, inspect details, and filter by group, friend, date, payer, and participant.
+Query recent expenses, inspect details, and filter by group, friend, date, payer, and participant. Create new expenses, delete existing ones, and bulk-import from YAML/JSON files.
 
 ## Quick Reference
 
@@ -23,6 +23,9 @@ Query recent expenses, inspect details, and filter by group, friend, date, payer
 | Payer filter | `splitwise-cli expenses list --payer @me --all` |
 | Participant filter | `splitwise-cli expenses list --involved Bob --all` |
 | Fetch one expense | `splitwise-cli expenses get <id> -o yaml` |
+| Add an expense | `splitwise-cli expenses add -d "Dinner" -a 30.00 -C EUR` |
+| Delete an expense | `splitwise-cli expenses delete <id>` |
+| Import from file | `splitwise-cli expenses import expenses.yaml` |
 
 ## Prerequisites
 
@@ -30,7 +33,7 @@ Query recent expenses, inspect details, and filter by group, friend, date, payer
 splitwise-cli login whoami
 ~~~
 
-If login is missing, set credentials first.
+If login is missing, set credentials first. Write operations (`add`, `delete`, `import`) also require `createExpenses`, `updateExpenses`, or `deleteExpenses` permissions to be enabled in the active profile.
 
 ## List Expenses
 
@@ -60,6 +63,117 @@ splitwise-cli expenses get <id>
 splitwise-cli expenses get <id> -o yaml
 ~~~
 
+## Add an Expense
+
+~~~bash
+splitwise-cli expenses add -d "Dinner" -a 30.00
+splitwise-cli expenses add -d "Groceries" -a 48.90 -C USD -g Flatmates --payer @me
+splitwise-cli expenses add -d "Coffee" -a 4.50 --friend Alice --user-share 123:2.25:2.25 --user-share 201:0:2.25
+~~~
+
+### Core Options (`expenses add`)
+
+| Option | Purpose |
+|---|---|
+| `-d, --description <text>` | Expense description (required) |
+| `-a, --cost <amount>` | Total cost (required) |
+| `--date <date>` | Expense date (`YYYY-MM-DD` or relative) |
+| `-C, --currency <code>` | Currency code (default: account default) |
+| `-g, --group <id|name>` | Group ID or partial name |
+| `-u, --friend <id|name>` | Friend ID or partial name |
+| `--notes <text>` | Additional notes/details |
+| `--category <id|name>` | Category ID or partial name |
+| `--payer <@me|id|name>` | User who paid (default: `@me`) |
+| `--split-equally` | Split equally among payer and group/friend (default) |
+| `--user-share <id:paid:owed>` | Custom share — repeat for each participant |
+
+When no `--user-share` flags are provided, the expense is split equally between the payer and the specified group or friend.
+
+## Delete an Expense
+
+~~~bash
+splitwise-cli expenses delete <id>
+splitwise-cli expenses delete <id> --yes      # skip confirmation prompt
+~~~
+
+Deletion prompts for confirmation in TUI mode. Pass `--yes` to confirm non-interactively.
+
+## Import Expenses from a File
+
+Bulk-create (and optionally update) expenses from a YAML or JSON file.
+
+~~~bash
+splitwise-cli expenses import expenses.yaml
+splitwise-cli expenses import expenses.json --dry-run
+splitwise-cli expenses import expenses.yaml --matcher intelligent --on-duplicate update
+~~~
+
+### Import File Formats
+
+Files must contain a list of expense records. Two shapes are supported and can be mixed within a single file.
+
+**Simplified shape** — group/friend resolved by name:
+
+~~~yaml
+- description: Dinner
+  cost: "30.00"
+  date: "2024-01-15"
+  currency: USD
+  group: Flatmates
+~~~
+
+**Full shape** — explicit per-user splits (requires `userId` in each entry):
+
+~~~yaml
+- description: Dinner
+  cost: "30.00"
+  date: "2024-01-15"
+  currency: USD
+  splits:
+    - userId: 123
+      paidShare: "30"
+      owedShare: "15"
+    - userId: 456
+      owedShare: "15"
+~~~
+
+JSON format follows the same structure.
+
+### Core Options (`expenses import`)
+
+| Option | Purpose |
+|---|---|
+| `--dry-run` | Preview changes without writing anything |
+| `--matcher <type>` | Duplicate detection: `exact` (default) or `intelligent` |
+| `--on-duplicate <action>` | Action when duplicate found: `skip` (default) or `update` |
+| `--no-cache` | Disable cache update after import |
+| `-o, --output <format>` | Output format |
+
+### Matchers
+
+- **`exact`** — matches on description, cost, currency, date, and user distribution (all must be identical).
+- **`intelligent`** — fuzzy matching: date within ±5 days or a single adjacent-key digit typo per date component; cost with a single adjacent-key digit typo; currency must match exactly.
+
+Keyboard adjacency includes both the top-row digit keys (horizontal neighbours) and standard numpad vertical neighbours (1↔4, 2↔5, 3↔6, 4↔7, 5↔8, 6↔9).
+
+### Duplicate Handling
+
+- `--on-duplicate=skip` (default): matched expenses are reported but not modified.
+- `--on-duplicate=update`: only fields that differ from the match are sent; no API call is made when nothing has changed.
+- `--dry-run` blocks both creates and updates regardless of other flags.
+
+### Import Summary Output
+
+After processing, a summary is printed to stderr:
+
+~~~text
+i [expenses import] Import Summary:
+i [expenses import]   Created: 2
+i [expenses import]   Updated: 0
+i [expenses import]   Skipped: 1
+i [expenses import]   Errors:  0
+~~~
+
 ## Supported Filters
 
 - --group and --friend resolve names or IDs.
@@ -80,6 +194,9 @@ splitwise-cli expenses list --query "group:flat from:-7d" --group Flatmates
 splitwise-cli expenses list --from -30d --all
 splitwise-cli expenses list --group Flatmates --payer @me
 splitwise-cli expenses get <id> -o yaml
+splitwise-cli expenses add -d "Lunch" -a 15.00 --friend Alice
+splitwise-cli expenses import monthly.yaml --dry-run
+splitwise-cli expenses import monthly.yaml --matcher intelligent --on-duplicate skip
 ~~~
 
 ## Output Guidance
@@ -113,11 +230,16 @@ splitwise-cli expenses get <id> -o yaml
 | No matching group/friend | Name does not resolve | Check `groups list` or `friends list` |
 | Invalid date | Unsupported date format | Use ISO (`YYYY-MM-DD`) or relative (`-10d`) |
 | Empty output unexpectedly | Strict filters + narrow date range | Broaden date range or remove filters |
+| Permission denied (write) | Profile lacks `createExpenses`/`deleteExpenses` | Enable in profile or use unrestricted profile |
+| Import parse error | Invalid YAML/JSON file | Check file syntax and field names |
 
 ## Command Discovery
 
 ~~~bash
 splitwise-cli expenses --help
 splitwise-cli expenses list --help
+splitwise-cli expenses add --help
+splitwise-cli expenses delete --help
+splitwise-cli expenses import --help
 splitwise-cli expenses get --help
 ~~~

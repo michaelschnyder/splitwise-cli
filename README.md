@@ -44,7 +44,7 @@ Configuration is stored under `~/.splitwise-cli/`.
 | Login | Manage multiple login credentials and inspect current user | `token`, `oauth`, `list`, `status`, `select`, `default`, `remove`, `validate`, `whoami` | [Login](#login) |
 | Friends | List friends and balances | `list` | [Friends](#friends) |
 | Groups | List groups and fetch group details | `list`, `get` | [Groups](#groups) |
-| Expenses | Query expenses with date/person/group filters | `list`, `get` | [Expenses](#expenses) |
+| Expenses | Query, create, delete, and import expenses | `list`, `get`, `add`, `delete`, `import` | [Expenses](#expenses) |
 | Profiles | Manage profile restrictions, active profile, and lock state | `list`, `show`, `create`, `edit`, `select`, `remove`, `validate`, `lock` | [Profiles](#profiles) |
 | Cache | Export immutable snapshots and inspect offline cache state | `add`, `list`, `refresh`, `status`, `delete` | [Cache & Offline](#cache--offline) |
 | Skills | List/install/create assistant skill files | `list`, `path`, `install`, `create` | [Skills](#skills) |
@@ -173,6 +173,9 @@ splitwise-cli groups get <groupId>
 ```bash
 splitwise-cli expenses list [options]
 splitwise-cli expenses get <expenseId>
+splitwise-cli expenses add [options]
+splitwise-cli expenses delete <expenseId>
+splitwise-cli expenses import <file> [options]
 ```
 
 ### Happy Path
@@ -180,6 +183,9 @@ splitwise-cli expenses get <expenseId>
 ```bash
 splitwise-cli expenses list --from -30d --all
 splitwise-cli expenses get <expenseId>
+splitwise-cli expenses add -d "Groceries" -a 48.90 -C USD -g Flatmates
+splitwise-cli expenses delete <expenseId>
+splitwise-cli expenses import monthly.yaml
 ```
 
 ### Core Options (`expenses list`)
@@ -200,6 +206,66 @@ splitwise-cli expenses get <expenseId>
 
 Date values support ISO (`2026-01-01`) and relative values (`-10d`, `-2w`, `-1month`, `-1y`).
 
+### Core Options (`expenses add`)
+
+| Flag | Short | Description |
+|---|---|---|
+| `--description <text>` | `-d` | Expense description (required) |
+| `--cost <amount>` | `-a` | Total cost (required) |
+| `--date <date>` |  | Expense date (`YYYY-MM-DD` or relative) |
+| `--currency <code>` | `-C` | Currency code |
+| `--group <id|name>` | `-g` | Group ID or partial name |
+| `--friend <id|name>` | `-u` | Friend ID or partial name |
+| `--notes <text>` |  | Additional notes |
+| `--category <id|name>` |  | Category ID or partial name |
+| `--payer <@me|id|name>` |  | User who paid (default: `@me`) |
+| `--split-equally` |  | Split equally (default) |
+| `--user-share <id:paid:owed>` |  | Custom share — repeat per participant |
+
+### Core Options (`expenses delete`)
+
+| Flag | Description |
+|---|---|
+| `--yes` | Skip the confirmation prompt |
+
+### Core Options (`expenses import`)
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Preview changes without writing |
+| `--matcher <type>` | Duplicate detection: `exact` (default) or `intelligent` |
+| `--on-duplicate <action>` | Action on match: `skip` (default) or `update` |
+| `--no-cache` | Disable cache update after import |
+
+Import files are YAML or JSON lists. Two record shapes are supported:
+
+**Simplified** — group/friend resolved by name:
+
+```yaml
+- description: Dinner
+  cost: "30.00"
+  date: "2024-01-15"
+  currency: USD
+  group: Flatmates
+```
+
+**Full** — explicit per-user splits (requires `userId`):
+
+```yaml
+- description: Dinner
+  cost: "30.00"
+  date: "2024-01-15"
+  currency: USD
+  splits:
+    - userId: 123
+      paidShare: "30"
+      owedShare: "15"
+    - userId: 456
+      owedShare: "15"
+```
+
+Both shapes can be mixed in the same file. The `intelligent` matcher tolerates date differences of ±5 days, a single adjacent-key digit typo per date component or in the cost digits, with exact currency match required.
+
 ### Example Commands
 
 ```bash
@@ -207,6 +273,11 @@ splitwise-cli expenses list --from -30d --all -o json
 splitwise-cli expenses list --group Flatmates --mine --from -1month
 splitwise-cli expenses list --involved Alice --from -14d
 splitwise-cli expenses get 99999 -o yaml
+splitwise-cli expenses add -d "Coffee" -a 4.50 --friend Alice
+splitwise-cli expenses add -d "Rent" -a 1200 -g Flatmates --user-share 123:1200:600 --user-share 456:0:600
+splitwise-cli expenses delete 99999 --yes
+splitwise-cli expenses import monthly.yaml --dry-run
+splitwise-cli expenses import monthly.yaml --matcher intelligent --on-duplicate update
 ```
 
 ### Example Response (`expenses list`)

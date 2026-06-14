@@ -4,7 +4,7 @@ description: Splitwise CLI command reference for login, profiles, cache, friends
 metadata:
   version: "1.1.0"
   author: splitwise-cli
-  tags: splitwise,cli,cache,expenses,groups,friends,login,profiles
+  tags: splitwise,cli,cache,expenses,groups,friends,login,profiles,write,import
   alwaysApply: "false"
 ---
 
@@ -27,6 +27,9 @@ Use this skill when you need command-driven access to Splitwise data, cache snap
 | List recent expenses | `splitwise-cli expenses list --from -30d` |
 | List all pages | `splitwise-cli expenses list --all -o json` |
 | Get one expense | `splitwise-cli expenses get <id>` |
+| Add an expense | `splitwise-cli expenses add -d "Dinner" -a 30.00` |
+| Delete an expense | `splitwise-cli expenses delete <id>` |
+| Import expenses | `splitwise-cli expenses import expenses.yaml` |
 | Install skills | `splitwise-cli skills install claude` |
 
 ## Prerequisites
@@ -60,7 +63,7 @@ splitwise-cli expenses list --from -30d --all
 - cache: export immutable snapshots, refresh them, inspect coverage, and delete cache targets.
 - friends: list friends and balances.
 - groups: list groups or fetch group details.
-- expenses: query recent expenses with server-side filters, client-side filters, and output formats.
+- expenses: query, create, delete, and import expenses with filters, output formats, and duplicate detection.
 - skills: list/create/install packaged skill resources.
 
 ## Output Formats
@@ -106,6 +109,21 @@ splitwise-cli expenses list --query "group:Flatmates from:-14d" -o json
 splitwise-cli expenses get <id> -o yaml
 ~~~
 
+### Add a new expense
+
+~~~bash
+splitwise-cli expenses add -d "Groceries" -a 48.90 -C USD -g Flatmates --payer @me
+splitwise-cli expenses add -d "Coffee" -a 4.50 --friend Alice
+~~~
+
+### Bulk import from file
+
+~~~bash
+splitwise-cli expenses import monthly.yaml --dry-run
+splitwise-cli expenses import monthly.yaml --matcher intelligent --on-duplicate skip
+splitwise-cli expenses import monthly.yaml --on-duplicate update
+~~~
+
 ### Verify balances quickly
 
 ~~~bash
@@ -122,13 +140,18 @@ splitwise-cli groups list
 | Ambiguous match error | Multiple partial matches | Use full name or numeric ID |
 | Date parse error | Invalid relative/ISO value | Use `YYYY-MM-DD` or `-10d` style values |
 | Offline request fails | Missing cache snapshot | Run `splitwise-cli cache add <entity>` first |
+| Permission denied (write) | Profile blocks create/update/delete | Enable permissions in profile settings |
 
 ## Command Discovery
 
 ~~~bash
 splitwise-cli --help
 splitwise-cli cache --help
+splitwise-cli expenses --help
 splitwise-cli expenses list --help
+splitwise-cli expenses add --help
+splitwise-cli expenses delete --help
+splitwise-cli expenses import --help
 splitwise-cli skills --help
 ~~~
 
@@ -137,3 +160,5 @@ splitwise-cli skills --help
 - Use `expenses list --all` to paginate through all results.
 - Use `expenses list --query` for shorthand filters such as `from:-30d`.
 - `cache add` and `cache refresh` create immutable snapshots that can be reused with `--offline`.
+- Write operations (`add`, `delete`, `import`) require profile permissions (`createExpenses`, `updateExpenses`, `deleteExpenses`).
+- `expenses import` supports both simplified (group/friend by name) and full (per-user splits) record shapes.
