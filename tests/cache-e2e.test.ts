@@ -347,9 +347,9 @@ test('e2e lookup export writes categories and currencies as separate cache entit
       'json',
     ], e2e.tempDir, e2e.env);
 
-    const entities = new Set((JSON.parse(cacheList) as Array<{ entity: string }>).map((row) => row.entity));
-    assert.equal(entities.has('categories'), true);
-    assert.equal(entities.has('currencies'), true);
+    const entities = (JSON.parse(cacheList) as Array<{ entity: string }>).map((row) => row.entity);
+    assert.equal(entities.some((entity) => entity.startsWith('categories (')), true);
+    assert.equal(entities.some((entity) => entity.startsWith('currencies (')), true);
   } finally {
     await teardownE2EEnvironment(e2e);
   }
@@ -393,7 +393,7 @@ test('e2e offline expenses do not hit the network after export and still work wi
   }
 });
 
-test('e2e cache list exposes coverage status for expense exports', async () => {
+test('e2e cache list exposes the reshaped cache row for expense exports', async () => {
   const e2e = await setupE2EEnvironment();
 
   try {
@@ -418,10 +418,17 @@ test('e2e cache list exposes coverage status for expense exports', async () => {
       'local',
       '-o',
       'json',
-    ], e2e.tempDir, e2e.env)) as Array<{ entity: string; coverageStatus?: string }>;
+    ], e2e.tempDir, e2e.env)) as Array<{ id: string; created: string; entity: string; scope: string; Details: string }>;
 
-    const expenseRow = rows.find((row) => row.entity === 'expenses');
-    assert.equal(expenseRow?.coverageStatus, 'full');
+    assert.equal(Object.keys(rows[0] ?? {})[0], 'id');
+    assert.equal(Object.keys(rows[0] ?? {})[1], 'created');
+    assert.equal(Object.keys(rows[0] ?? {})[2], 'entity');
+
+    const expenseRow = rows.find((row) => row.entity.startsWith('expenses ('));
+    assert.ok(expenseRow, 'expense row should be present in cache list');
+    assert.equal(typeof expenseRow.created, 'string');
+    assert.equal(expenseRow.Details.includes('location: '), true);
+    assert.equal(expenseRow.Details.includes('size: '), true);
   } finally {
     await teardownE2EEnvironment(e2e);
   }
@@ -450,9 +457,9 @@ test('e2e cache delete removes a cache entry by id', async () => {
       'local',
       '-o',
       'json',
-    ], e2e.tempDir, e2e.env)) as Array<{ batchId: string; entity: string }>;
+    ], e2e.tempDir, e2e.env)) as Array<{ id: string; entity: string }>;
 
-    const cacheEntry = initialRows.find((row) => row.entity === 'friends');
+    const cacheEntry = initialRows.find((row) => row.entity.startsWith('friends ('));
     assert.ok(cacheEntry);
 
     await runCliOrThrow([
@@ -460,7 +467,7 @@ test('e2e cache delete removes a cache entry by id', async () => {
       '--profile', e2e.profileName,
       'cache',
       'delete',
-      cacheEntry.batchId,
+      cacheEntry.id,
       '--target',
       'local',
     ], e2e.tempDir, e2e.env);

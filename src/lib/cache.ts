@@ -388,6 +388,40 @@ export function createCacheEntry(input: {
   };
 }
 
+export function saveLookupEntitySnapshot(input: {
+  target: CacheTarget;
+  entity: 'friends' | 'groups';
+  profileName: string;
+  credentialName?: string;
+  accountUserId?: number;
+  accountUserName?: string;
+  items: Friend[] | Group[];
+}): CacheManifestEntry {
+  const batchId = generateBatchId();
+  const payload = input.entity === 'friends'
+    ? { entity: 'friends' as const, items: input.items as Friend[] }
+    : { entity: 'groups' as const, items: input.items as Group[] };
+  const payloadPath = writeCachePayload(input.target, batchId, payload);
+  const entry = createCacheEntry({
+    batchId,
+    entity: input.entity,
+    target: input.target,
+    profileName: input.profileName,
+    credentialName: input.credentialName,
+    accountUserId: input.accountUserId,
+    accountUserName: input.accountUserName,
+    exportedAt: new Date().toISOString(),
+    request: {
+      method: 'GET',
+      url: input.entity === 'friends' ? '/get_friends' : '/get_groups',
+    },
+    payloadPath,
+    payload,
+  });
+  appendCacheEntries(input.target, [entry]);
+  return entry;
+}
+
 export function loadCachePayload<T extends CachePayload>(target: CacheTarget, entry: CacheManifestEntry): T {
   const absolutePath = join(getCacheRootPath(target), entry.payloadPath);
   return JSON.parse(readFileSync(absolutePath, 'utf-8')) as T;

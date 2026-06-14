@@ -1,4 +1,6 @@
 import { Command } from 'commander';
+import { statSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Category, Comment, Currency, CurrentUser, Expense, Group } from 'splitwise';
 import {
   type CacheTarget,
@@ -14,7 +16,6 @@ import {
   appendCacheEntries,
   cachePayloadPath,
   type CategoriesCachePayload,
-  classifyEntryCoverage,
   type CommentsCachePayload,
   createStagedBatchId,
   createCacheEntry,
@@ -39,6 +40,7 @@ import {
 } from '../lib/cache.js';
 import {
   addOutputOption,
+  createTuiProgress,
   createLogger,
   formatName,
   getFormat,
@@ -145,35 +147,93 @@ async function exportExpenses(sw: ReturnType<typeof getClient>, scope: CacheScop
   };
 }
 
-async function exportComments(sw: ReturnType<typeof getClient>, expenses: Expense[]): Promise<CommentsCachePayload> {
+type ExportProgress = ReturnType<typeof createTuiProgress>;
+
+function updateExportProgress(progress: ExportProgress, message: string): void {
+  progress.start(message);
+}
+
+async function exportExpensesWithProgress(
+  sw: ReturnType<typeof getClient>,
+  scope: CacheScope,
+  progress: ExportProgress,
+): Promise<ExpensesCachePayload> {
+  const params: Record<string, unknown> = {};
+  if (scope.groupId !== undefined) params.groupId = scope.groupId;
+  if (scope.friendId !== undefined) params.friendId = scope.friendId;
+  if (scope.from !== undefined) params.datedAfter = scope.from;
+  if (scope.to !== undefined) params.datedBefore = scope.to;
+  if (scope.createdAfter !== undefined) params.createdAfter = scope.createdAfter;
+  if (scope.createdBefore !== undefined) params.createdBefore = scope.createdBefore;
+  if (scope.updatedAfter !== undefined) params.updatedAfter = scope.updatedAfter;
+  if (scope.updatedBefore !== undefined) params.updatedBefore = scope.updatedBefore;
+
+  const items: Expense[] = [];
+  let pageNumber = 0;
+  updateExportProgress(progress, 'Loading expenses...');
+  for await (const page of sw.expenses.list(params).byPage()) {
+    pageNumber += 1;
+    items.push(...page);
+    updateExportProgress(progress, `Loading expenses... ${items.length} item(s) across ${pageNumber} page(s).`);
+  }
+
+  progress.stop(`Loaded ${items.length} expense item(s).`, 'success');
+
+  return {
+    entity: 'expenses',
+    items,
+  };
+}
+
+async function exportComments(sw: ReturnType<typeof getClient>, expenses: Expense[], progress: ExportProgress): Promise<CommentsCachePayload> {
   const items: Record<string, Comment[]> = {};
+  if (expenses.length === 0) {
+    progress.stop('Skipped comments export because no expenses were returned.', 'neutral');
+    return { entity: 'comments', items };
+  }
+
   for (const expense of expenses) {
+    const done = Object.keys(items).length;
+    const remaining = expenses.length - done;
+    updateExportProgress(progress, `Loading comments ${done}/${expenses.length} done, ${remaining} remaining...`);
     items[String(expense.id)] = await sw.comments.list({ expenseId: expense.id });
   }
+  progress.stop(`Loaded comments for ${expenses.length} expense item(s).`, 'success');
   return { entity: 'comments', items };
 }
 
-async function exportFriends(sw: ReturnType<typeof getClient>): Promise<FriendsCachePayload> {
+async function exportFriends(sw: ReturnType<typeof getClient>, progress: ExportProgress): Promise<FriendsCachePayload> {
+  updateExportProgress(progress, 'Loading all friends...');
   const items = await sw.friends.list();
+  progress.stop(`Loaded ${items.length} friend record(s).`, 'success');
   return { entity: 'friends', items };
 }
 
-async function exportGroups(sw: ReturnType<typeof getClient>): Promise<GroupsCachePayload> {
+async function exportGroups(sw: ReturnType<typeof getClient>, progress: ExportProgress): Promise<GroupsCachePayload> {
+  updateExportProgress(progress, 'Loading all groups...');
   const groups = await sw.groups.list();
+  progress.stop(`Loaded ${groups.length} group summary record(s).`, 'success');
+
   const items: Group[] = [];
   for (const group of groups) {
+    updateExportProgress(progress, `Loading group details ${items.length}/${groups.length} done, ${groups.length - items.length} remaining...`);
     items.push(await sw.groups.get({ id: group.id }));
   }
+  progress.stop(`Loaded ${items.length} group detail record(s).`, 'success');
   return { entity: 'groups', items };
 }
 
-async function exportGroupsLite(sw: ReturnType<typeof getClient>): Promise<GroupsCachePayload> {
+async function exportGroupsLite(sw: ReturnType<typeof getClient>, progress: ExportProgress): Promise<GroupsCachePayload> {
+  updateExportProgress(progress, 'Loading group summaries for expense lookup...');
   const items = await sw.groups.list();
+  progress.stop(`Loaded ${items.length} group summary record(s).`, 'success');
   return { entity: 'groups', items };
 }
 
-async function exportLookup(sw: ReturnType<typeof getClient>): Promise<{ categories: CategoriesCachePayload; currencies: CurrenciesCachePayload }> {
+async function exportLookup(sw: ReturnType<typeof getClient>, progress: ExportProgress): Promise<{ categories: CategoriesCachePayload; currencies: CurrenciesCachePayload }> {
+  updateExportProgress(progress, 'Loading categories and currencies...');
   const [categories, currencies] = await Promise.all([sw.categories.list(), sw.currencies.list()]);
+  progress.stop(`Loaded ${categories.length} categories and ${currencies.length} currencies.`, 'success');
   return {
     categories: { entity: 'categories', items: categories as Category[] },
     currencies: { entity: 'currencies', items: currencies as Currency[] },
@@ -266,6 +326,7 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
     ? findLatestCacheEntry(target, { entity: 'expenses', accountUserId: currentUser.id, profileName })
     : undefined;
   const latestScope = latestExpenseEntry?.scope;
+  const progress = createTuiProgress(isTuiDefault(cmd));
   const baseExpenseScope = {
     from: options.from
       ? parseDate(options.from)
@@ -287,91 +348,83 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
   }
 
   const context = { profileName, credentialName, currentUser, logger };
-  const tasks: Array<Promise<CacheManifestEntry[]>> = [];
+  const entries: CacheManifestEntry[] = [];
 
   if (entity === 'friends' || entity === 'all') {
-    tasks.push(exportFriends(sw).then(async (payload) => [await persistExport(target, {
+    const payload = await exportFriends(sw, progress);
+    entries.push(await persistExport(target, {
       writeBatchId: stagedBatchId,
       finalBatchId: batchId,
       entity: 'friends',
       payload,
       scope: undefined,
       exportedAt,
-    }, context)]));
+    }, context));
   }
   if (entity === 'groups' || entity === 'all') {
-    tasks.push(exportGroups(sw).then(async (payload) => [await persistExport(target, {
+    const payload = await exportGroups(sw, progress);
+    entries.push(await persistExport(target, {
       writeBatchId: stagedBatchId,
       finalBatchId: batchId,
       entity: 'groups',
       payload,
       scope: undefined,
       exportedAt,
-    }, context)]));
+    }, context));
   }
   if (entity === 'lookup' || entity === 'all') {
-    tasks.push(
-      exportLookup(sw).then(async (payloads) => {
-        const categoriesEntry = await persistExport(target, {
-          writeBatchId: stagedBatchId,
-          finalBatchId: batchId,
-          entity: 'categories',
-          payload: payloads.categories,
-          scope: undefined,
-          exportedAt,
-        }, context);
-        const currenciesEntry = await persistExport(target, {
-          writeBatchId: stagedBatchId,
-          finalBatchId: batchId,
-          entity: 'currencies',
-          payload: payloads.currencies,
-          scope: undefined,
-          exportedAt,
-        }, context);
-        return [categoriesEntry, currenciesEntry];
-      }),
-    );
+    const payloads = await exportLookup(sw, progress);
+    entries.push(await persistExport(target, {
+      writeBatchId: stagedBatchId,
+      finalBatchId: batchId,
+      entity: 'categories',
+      payload: payloads.categories,
+      scope: undefined,
+      exportedAt,
+    }, context));
+    entries.push(await persistExport(target, {
+      writeBatchId: stagedBatchId,
+      finalBatchId: batchId,
+      entity: 'currencies',
+      payload: payloads.currencies,
+      scope: undefined,
+      exportedAt,
+    }, context));
   }
   if (entity === 'expenses' || entity === 'all') {
-    tasks.push(
-      exportExpenses(sw, refreshScope).then(async (payload) => {
-        const entries: CacheManifestEntry[] = [];
-        entries.push(await persistExport(target, {
-          writeBatchId: stagedBatchId,
-          finalBatchId: batchId,
-          entity: 'expenses',
-          payload,
-          scope: refreshScope,
-          exportedAt,
-        }, context));
-        const commentPayload = await exportComments(sw, payload.items);
-        entries.push(await persistExport(target, {
-          writeBatchId: stagedBatchId,
-          finalBatchId: batchId,
-          entity: 'comments',
-          payload: commentPayload,
-          scope: refreshScope,
-          exportedAt,
-        }, context));
-        if (entity === 'expenses') {
-          const groupsPayload = await exportGroupsLite(sw);
-          entries.push(await persistExport(target, {
-            writeBatchId: stagedBatchId,
-            finalBatchId: batchId,
-            entity: 'groups',
-            payload: groupsPayload,
-            scope: undefined,
-            exportedAt,
-          }, context));
-        }
-        return entries;
-      }),
-    );
+    const payload = await exportExpensesWithProgress(sw, refreshScope, progress);
+    entries.push(await persistExport(target, {
+      writeBatchId: stagedBatchId,
+      finalBatchId: batchId,
+      entity: 'expenses',
+      payload,
+      scope: refreshScope,
+      exportedAt,
+    }, context));
+    const commentPayload = await exportComments(sw, payload.items, progress);
+    entries.push(await persistExport(target, {
+      writeBatchId: stagedBatchId,
+      finalBatchId: batchId,
+      entity: 'comments',
+      payload: commentPayload,
+      scope: refreshScope,
+      exportedAt,
+    }, context));
+    if (entity === 'expenses') {
+      const groupsPayload = await exportGroupsLite(sw, progress);
+      entries.push(await persistExport(target, {
+        writeBatchId: stagedBatchId,
+        finalBatchId: batchId,
+        entity: 'groups',
+        payload: groupsPayload,
+        scope: undefined,
+        exportedAt,
+      }, context));
+    }
   }
 
   let finalized = false;
   try {
-    const entries = (await Promise.all(tasks)).flat();
     exportLogger.debug(`Finalizing staged batch ${stagedBatchId} as ${batchId}.`);
     finalizeStagedBatch(target, stagedBatchId, batchId);
     finalized = true;
@@ -400,11 +453,36 @@ function deleteCacheEntry(target: CacheTarget, cacheId: string): void {
   removeBatch(target, cacheId);
 }
 
-function formatDateRange(min?: string, max?: string): string {
+function formatLocalValue(value?: string): string {
+  if (!value) return 'n/a';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const parsed = new Date(`${value}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString();
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function formatLocalDateRange(min?: string, max?: string): string {
   if (!min && !max) return 'n/a';
-  if (min && max && min === max) return min;
-  if (min && max) return `${min} to ${max}`;
-  return min ?? max ?? 'n/a';
+  if (min && max && min === max) return formatLocalValue(min);
+  if (min && max) return `${formatLocalValue(min)} to ${formatLocalValue(max)}`;
+  return formatLocalValue(min ?? max);
+}
+
+function formatFileSizeKb(target: CacheTarget, payloadPath: string): string {
+  try {
+    const absolutePath = join(getCacheRootPath(target), payloadPath);
+    const sizeInBytes = statSync(absolutePath).size;
+    const sizeInKb = sizeInBytes / 1024;
+    return `${sizeInKb.toFixed(sizeInKb >= 10 ? 0 : 1)} KB`;
+  } catch {
+    return 'n/a';
+  }
+}
+
+function formatLocation(target: CacheTarget, payloadPath: string): string {
+  return join(getCacheRootPath(target), payloadPath);
 }
 
 function formatScopeFilters(scope?: CacheScope): string {
@@ -421,36 +499,42 @@ function formatScopeFilters(scope?: CacheScope): string {
   return parts.length > 0 ? parts.join('\n') : 'n/a';
 }
 
-function describeCacheListEntry(entry: CacheManifestEntry): Record<string, unknown> {
-  const coverageLines: string[] = [`created_at: ${formatDateRange(entry.coverage?.createdAtMin, entry.coverage?.createdAtMax)}`];
+function describeCacheListEntry(entry: CacheManifestEntry, options?: { includeLocationPath?: boolean }): Record<string, unknown> {
+  const scopeLines: string[] = [
+    `account: ${entry.accountUserName ?? ''} (${entry.accountUserId ?? 'unknown'})`,
+  ];
+
+  const oldestValue = entry.coverage?.createdAtMin
+    ?? entry.coverage?.createdAtMax;
+  const newestValue = entry.coverage?.updatedAtMax
+    ?? entry.coverage?.createdAtMax
+    ?? entry.exportedAt;
+  const itemCount = entry.rowCount ?? 0;
+  const locationLabel = options?.includeLocationPath
+    ? formatLocation(entry.target, entry.payloadPath)
+    : entry.target;
+  const detailLines = [
+    `oldest: ${formatLocalValue(oldestValue)}`,
+    `newest: ${formatLocalValue(newestValue)}`,
+    `location: ${locationLabel}`,
+    `size: ${formatFileSizeKb(entry.target, entry.payloadPath)} / ${itemCount} ${entry.entity}`,
+  ];
+
   if (entry.entity === 'expenses') {
-    coverageLines.unshift(`expense_date: ${formatDateRange(entry.coverage?.expenseDateMin, entry.coverage?.expenseDateMax)}`);
-    coverageLines.push(`updated_at: ${formatDateRange(entry.coverage?.updatedAtMin, entry.coverage?.updatedAtMax)}`);
-  } else if (entry.coverage?.updatedAtMin || entry.coverage?.updatedAtMax) {
-    coverageLines.push(`updated_at: ${formatDateRange(entry.coverage?.updatedAtMin, entry.coverage?.updatedAtMax)}`);
+    scopeLines.push(`date: ${formatLocalDateRange(entry.coverage?.expenseDateMin, entry.coverage?.expenseDateMax)}`);
   }
 
-  const filterLines: string[] = [];
-  if (entry.entity === 'expenses') {
-    filterLines.push(formatScopeFilters(entry.scope));
-  } else {
-    filterLines.push('n/a');
+  const filters = formatScopeFilters(entry.scope);
+  if (filters !== 'n/a') {
+    scopeLines.push(filters);
   }
 
   return {
-    entity: entry.entity,
-    batchId: entry.batchId,
-    items: entry.rowCount ?? 0,
-    coverage: coverageLines.join('\n'),
-    filters: filterLines.join('\n'),
-    createdAt: entry.exportedAt,
-    identity: [
-      `target: ${entry.target}`,
-      `profile: ${entry.profileName}`,
-      `credential: ${entry.credentialName ?? ''}`,
-      `account: ${entry.accountUserName ?? ''} (${entry.accountUserId ?? 'unknown'})`,
-    ].join('\n'),
-    coverageStatus: classifyEntryCoverage(entry),
+    id: entry.batchId,
+    created: formatLocalValue(entry.exportedAt),
+    entity: `${entry.entity} (${itemCount})`,
+    scope: scopeLines.join('\n'),
+    Details: detailLines.join('\n'),
   };
 }
 
@@ -467,9 +551,16 @@ export function registerCache(program: Command): void {
       const startedAt = Date.now();
       const target = resolvedTarget(this, options);
       const manifest = ensureCacheManifest(target);
-      const rows = manifest.entries.map((entry) => {
-        const row = describeCacheListEntry(entry);
-        cacheLogger.trace(`Entry ${entry.entity} ${entry.batchId}: ${String(row.coverageStatus)} coverage, ${entry.rowCount ?? 0} item(s).`);
+      const includeLocationPath = fmt !== 'table';
+      const rows = [...manifest.entries]
+        .sort((left, right) => {
+          const exportedCompare = right.exportedAt.localeCompare(left.exportedAt);
+          if (exportedCompare !== 0) return exportedCompare;
+          return right.batchId.localeCompare(left.batchId);
+        })
+        .map((entry) => {
+        const row = describeCacheListEntry(entry, { includeLocationPath });
+        cacheLogger.trace(`Entry ${entry.entity} ${entry.batchId}: ${entry.rowCount ?? 0} item(s).`);
         return row;
       });
 

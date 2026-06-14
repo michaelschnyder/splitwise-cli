@@ -5,8 +5,16 @@ import {
   getDataClient,
   ensureExpenseGroupAllowed,
   ensureExpenseFriendAllowed,
+  resolveCacheTarget,
+  resolveCredential,
   resolveProfile,
 } from '../lib/config.js';
+import {
+  findLatestCacheEntry,
+  loadLatestFriends,
+  loadLatestGroups,
+  saveLookupEntitySnapshot,
+} from '../lib/cache.js';
 import {
   addOutputOption, getFormat, formatName,
   render, renderOne, renderEmptyList, renderTuiList,
@@ -18,6 +26,7 @@ import { parseDate } from '../lib/dates.js';
 
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
 const MIN_TRUNCATED_WIDTH = 13; // 10 visible characters + "..."
+const LOOKUP_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 type TruncationKey = 'group' | 'paidBy' | 'description' | 'category';
 
@@ -46,6 +55,13 @@ function truncateVisual(input: string, maxWidth: number): string {
     used += segmentWidth;
   }
   return `${out}...`;
+}
+
+function isFreshEnough(exportedAt?: string): boolean {
+  if (!exportedAt) return false;
+  const parsed = Date.parse(exportedAt);
+  if (Number.isNaN(parsed)) return false;
+  return Date.now() - parsed <= LOOKUP_CACHE_MAX_AGE_MS;
 }
 
 function uniquePrefixLength(value: string, allValues: string[]): number {
@@ -245,22 +261,78 @@ export function registerExpenses(program: Command): void {
       const datedBefore = opts.to   ? parseDate(opts.to)   : undefined;
 
       const startedAt = Date.now();
+      const target = resolveCacheTarget(this);
+      const profileName = resolveProfile(this).name;
+      const { name: credentialName, credential } = resolveCredential(this);
+      const accountUserId = credential.userId;
 
-      // ── Fetch lookup data in parallel ─────────────────────────────────────
-      const [allGroups, allFriends] = await Promise.all([
-        sw.groups.list(),
-        sw.friends.list(),
-      ]);
-
-      const groupLookup = new Map<number, string>();
-      for (const g of allGroups) groupLookup.set(g.id, g.name);
+      const latestGroupsEntry = findLatestCacheEntry(target, { entity: 'groups', accountUserId, profileName });
+      const latestFriendsEntry = findLatestCacheEntry(target, { entity: 'friends', accountUserId, profileName });
+      let allGroups = isFreshEnough(latestGroupsEntry?.exportedAt)
+        ? loadLatestGroups(target, accountUserId, profileName)
+        : [];
+      let allFriends = isFreshEnough(latestFriendsEntry?.exportedAt)
+        ? loadLatestFriends(target, accountUserId, profileName)
+        : [];
+      let groupsLoadedFromApi = false;
+      let friendsLoadedFromApi = false;
 
       // ── Lazy current user (fetched at most once) ──────────────────────────
       let meCache: Awaited<ReturnType<typeof sw.users.getCurrent>> | undefined;
-      const getMe = async () => {
+      async function getMe() {
         if (!meCache) meCache = await sw.users.getCurrent();
         return meCache;
+      }
+
+      const refreshGroupsFromApi = async () => {
+        if (sw.getSourceKind() === 'cache') return allGroups;
+        const summaries = await sw.groups.list();
+        const fullGroups = [] as typeof summaries;
+        for (const summary of summaries) {
+          fullGroups.push(await sw.groups.get({ id: summary.id }));
+        }
+        const me = await getMe();
+        saveLookupEntitySnapshot({
+          target,
+          entity: 'groups',
+          profileName,
+          credentialName,
+          accountUserId: me.id,
+          accountUserName: formatName(me),
+          items: fullGroups,
+        });
+        allGroups = fullGroups;
+        groupsLoadedFromApi = true;
+        return allGroups;
       };
+
+      const refreshFriendsFromApi = async () => {
+        if (sw.getSourceKind() === 'cache') return allFriends;
+        const remoteFriends = await sw.friends.list();
+        const me = await getMe();
+        saveLookupEntitySnapshot({
+          target,
+          entity: 'friends',
+          profileName,
+          credentialName,
+          accountUserId: me.id,
+          accountUserName: formatName(me),
+          items: remoteFriends,
+        });
+        allFriends = remoteFriends;
+        friendsLoadedFromApi = true;
+        return allFriends;
+      };
+
+      if (allGroups.length === 0 && sw.getSourceKind() !== 'cache') {
+        allGroups = await refreshGroupsFromApi();
+      }
+      if (allFriends.length === 0 && sw.getSourceKind() !== 'cache') {
+        allFriends = await refreshFriendsFromApi();
+      }
+
+      const groupLookup = new Map<number, string>();
+      for (const g of allGroups) groupLookup.set(g.id, g.name);
 
       // ── Resolve any user value (@me / id / partial name) to a userId ──────
       const resolveUser = async (label: string, value: string): Promise<number | undefined> => {
@@ -299,7 +371,13 @@ export function registerExpenses(program: Command): void {
           groupId = asNum;
         } else {
           const needle = opts.group.toLowerCase();
-          const matches = allGroups.filter((g) => g.name.toLowerCase().includes(needle));
+          let matches = allGroups.filter((g) => g.name.toLowerCase().includes(needle));
+          if (matches.length === 0 && !groupsLoadedFromApi && sw.getSourceKind() !== 'cache') {
+            allGroups = await refreshGroupsFromApi();
+            groupLookup.clear();
+            for (const g of allGroups) groupLookup.set(g.id, g.name);
+            matches = allGroups.filter((g) => g.name.toLowerCase().includes(needle));
+          }
           if (matches.length === 0) {
             logger.warn(`Warning: no group matching "${opts.group}" - returning empty list.`);
             renderEmptyList(fmt);
@@ -326,10 +404,17 @@ export function registerExpenses(program: Command): void {
           friendId = asNum;
         } else {
           const needle = opts.friend.toLowerCase();
-          const matches = allFriends.filter((f) =>
+          let matches = allFriends.filter((f) =>
             `${f.firstName} ${f.lastName}`.toLowerCase().includes(needle) ||
             (f.firstName ?? '').toLowerCase().includes(needle),
           );
+          if (matches.length === 0 && !friendsLoadedFromApi && sw.getSourceKind() !== 'cache') {
+            allFriends = await refreshFriendsFromApi();
+            matches = allFriends.filter((f) =>
+              `${f.firstName} ${f.lastName}`.toLowerCase().includes(needle) ||
+              (f.firstName ?? '').toLowerCase().includes(needle),
+            );
+          }
           if (matches.length === 0) {
             logger.warn(`Warning: no friend matching "${opts.friend}" - returning empty list.`);
             renderEmptyList(fmt);
@@ -404,6 +489,17 @@ export function registerExpenses(program: Command): void {
 
       const consumeClientWarnings = () => {
         for (const warning of sw.consumeWarnings()) logger.warn(warning);
+      };
+
+      const ensureGroupNamesResolved = async (expenses: Expense[]) => {
+        const unresolved = expenses
+          .map((expense) => expense.groupId)
+          .filter((groupId): groupId is number => groupId !== null)
+          .filter((groupId) => !groupLookup.has(groupId));
+        if (unresolved.length === 0 || groupsLoadedFromApi || sw.getSourceKind() === 'cache') return;
+        allGroups = await refreshGroupsFromApi();
+        groupLookup.clear();
+        for (const group of allGroups) groupLookup.set(group.id, group.name);
       };
 
       // ── Streaming renderers ───────────────────────────────────────────────
@@ -548,9 +644,10 @@ export function registerExpenses(program: Command): void {
         }
       };
 
-      const flushPage = (page: Expense[], remaining = Infinity): number => {
+      const flushPage = async (page: Expense[], remaining = Infinity): Promise<number> => {
         const filtered = page.filter(passesFilter).slice(0, remaining);
         if (filtered.length === 0) return 0;
+        await ensureGroupNamesResolved(filtered);
         if (fmt === 'table') flushTableRows(filtered.map(toTableRow));
         else flushFullRows(filtered.map(toFullRow));
         return filtered.length;
@@ -573,7 +670,7 @@ export function registerExpenses(program: Command): void {
         for await (const page of sw.expenses.list(params).byPage()) {
           progress.stop();
           pageCount++;
-          flushPage(page);
+          await flushPage(page);
           progress.start(`Fetched ${pageCount} page(s), loading more...`);
         }
         progress.stop();
@@ -584,7 +681,7 @@ export function registerExpenses(program: Command): void {
         for await (const page of sw.expenses.list(params).byPage()) {
           progress.stop();
           pageCount++;
-          emitted += flushPage(page, max - emitted);
+          emitted += await flushPage(page, max - emitted);
           if (emitted >= max) break;
           progress.start(`Fetched ${pageCount} page(s), loading more...`);
         }
@@ -594,7 +691,7 @@ export function registerExpenses(program: Command): void {
         progress.start('Fetching expenses...');
         const page = await sw.expenses.list(params);
         progress.stop();
-        flushPage(page);
+        await flushPage(page);
       }
 
       finalize();
