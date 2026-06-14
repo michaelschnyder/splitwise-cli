@@ -904,6 +904,18 @@ export function ensureExpenseFriendAllowed(cmd: Command | undefined, friendId: n
   process.exit(1);
 }
 
+export function ensureCreateExpenseAllowed(cmd: Command | undefined): void {
+  ensureExpenseOperationAllowed(cmd, 'create');
+}
+
+export function ensureUpdateExpenseAllowed(cmd: Command | undefined): void {
+  ensureExpenseOperationAllowed(cmd, 'update');
+}
+
+export function ensureDeleteExpenseAllowed(cmd: Command | undefined): void {
+  ensureExpenseOperationAllowed(cmd, 'delete');
+}
+
 export function filterAllowedExpenseGroupIds(cmd: Command | undefined, ids: number[]): number[] {
   const { profile } = resolveProfile(cmd);
   if (profile.limitExpensesToGroupIds === undefined || profile.limitExpensesToGroupIds === null) return ids;

@@ -113,6 +113,15 @@ export function createOfflineSplitwiseClient(input: {
         if (!found) throw new Error(`Expense ${params.id} was not found in offline cache.`);
         return found.expense;
       },
+      async create() {
+        throw new Error('Cannot create expenses in offline mode. Populate cache or use online mode.');
+      },
+      async update() {
+        throw new Error('Cannot update expenses in offline mode. Populate cache or use online mode.');
+      },
+      async delete() {
+        throw new Error('Cannot delete expenses in offline mode. Populate cache or use online mode.');
+      },
     },
     groups: {
       async list() {

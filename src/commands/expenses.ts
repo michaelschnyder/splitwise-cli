@@ -1,8 +1,11 @@
 import { Command } from 'commander';
+import prompts from 'prompts';
 import { dump as yamlDump } from 'js-yaml';
 import { type Expense } from 'splitwise';
 import {
   getDataClient,
+  ensureCreateExpenseAllowed,
+  ensureDeleteExpenseAllowed,
   ensureExpenseGroupAllowed,
   ensureExpenseFriendAllowed,
   resolveCacheTarget,
@@ -23,6 +26,7 @@ import {
   type OutputFormat,
 } from '../lib/output.js';
 import { parseDate } from '../lib/dates.js';
+import { buildExpenseCreateParams, parseExpenseShareInput } from '../lib/expense-writes.js';
 
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
 const MIN_TRUNCATED_WIDTH = 13; // 10 visible characters + "..."
@@ -695,6 +699,312 @@ export function registerExpenses(program: Command): void {
       }
 
       finalize();
+    });
+
+  addOutputOption(expenses.command('add'))
+    .description('Add a new expense')
+    .option('-d, --description <text>', 'Expense description')
+    .option('-a, --cost <amount>', 'Expense cost')
+    .option('--date <date>', 'Expense date (YYYY-MM-DD or relative)')
+    .option('-C, --currency <code>', 'Currency code')
+    .option('-g, --group <id|name>', 'Group ID or partial name')
+    .option('-u, --friend <id|name>', 'Friend ID or partial name')
+    .option('--notes <text>', 'Additional notes')
+    .option('--category <id|name>', 'Category ID or partial name')
+    .option('--payer <@me|id|name>', 'User who paid the expense', '@me')
+    .option('--split-equally', 'Split equally when no custom shares are provided', true)
+    .option('--user-share <spec>', 'Custom user share as id:paid:owed', (value: string, previous: string[]) => [...previous, value], [] as string[])
+    .action(async function (
+      this: Command,
+      opts: {
+        description?: string;
+        cost?: string;
+        date?: string;
+        currency?: string;
+        group?: string;
+        friend?: string;
+        notes?: string;
+        category?: string;
+        payer?: string;
+        splitEqually?: boolean;
+        userShare?: string[];
+      },
+    ) {
+      const logger = createLogger(this, 'expenses');
+      const fmt = getFormat(this);
+      const tuiMode = isTuiDefault(this);
+
+      ensureCreateExpenseAllowed(this);
+
+      const sw = getDataClient(this);
+      const { profile, name: profileName } = resolveProfile(this);
+      const target = resolveCacheTarget(this);
+      const { name: credentialName, credential } = resolveCredential(this);
+      const accountUserId = credential.userId;
+
+      let description = opts.description;
+      let cost = opts.cost;
+      if (tuiMode && (!description || !cost)) {
+        const answer = await prompts([
+          ...(description ? [] : [{ type: 'text' as const, name: 'description', message: 'Expense description' }]),
+          ...(cost ? [] : [{ type: 'text' as const, name: 'cost', message: 'Expense cost' }]),
+        ]);
+        description ??= typeof answer.description === 'string' ? answer.description : undefined;
+        cost ??= typeof answer.cost === 'string' ? answer.cost : undefined;
+      }
+
+      if (!description || !cost) {
+        logger.error('Expense description and cost are required.');
+        process.exit(1);
+      }
+
+      const latestGroupsEntry = findLatestCacheEntry(target, { entity: 'groups', accountUserId, profileName });
+      const latestFriendsEntry = findLatestCacheEntry(target, { entity: 'friends', accountUserId, profileName });
+      let allGroups = isFreshEnough(latestGroupsEntry?.exportedAt)
+        ? loadLatestGroups(target, accountUserId, profileName)
+        : [];
+      let allFriends = isFreshEnough(latestFriendsEntry?.exportedAt)
+        ? loadLatestFriends(target, accountUserId, profileName)
+        : [];
+      let groupsLoadedFromApi = false;
+      let friendsLoadedFromApi = false;
+
+      let meCache: Awaited<ReturnType<typeof sw.users.getCurrent>> | undefined;
+      async function getMe() {
+        if (!meCache) meCache = await sw.users.getCurrent();
+        return meCache;
+      }
+
+      const refreshGroupsFromApi = async () => {
+        if (sw.getSourceKind() === 'cache') return allGroups;
+        const summaries = await sw.groups.list();
+        const fullGroups = [] as typeof summaries;
+        for (const summary of summaries) {
+          fullGroups.push(await sw.groups.get({ id: summary.id }));
+        }
+        const me = await getMe();
+        saveLookupEntitySnapshot({
+          target,
+          entity: 'groups',
+          profileName,
+          credentialName,
+          accountUserId: me.id,
+          accountUserName: formatName(me),
+          items: fullGroups,
+        });
+        allGroups = fullGroups;
+        groupsLoadedFromApi = true;
+        return allGroups;
+      };
+
+      const refreshFriendsFromApi = async () => {
+        if (sw.getSourceKind() === 'cache') return allFriends;
+        const remoteFriends = await sw.friends.list();
+        const me = await getMe();
+        saveLookupEntitySnapshot({
+          target,
+          entity: 'friends',
+          profileName,
+          credentialName,
+          accountUserId: me.id,
+          accountUserName: formatName(me),
+          items: remoteFriends,
+        });
+        allFriends = remoteFriends;
+        friendsLoadedFromApi = true;
+        return allFriends;
+      };
+
+      if (allGroups.length === 0 && sw.getSourceKind() !== 'cache') {
+        allGroups = await refreshGroupsFromApi();
+      }
+      if (allFriends.length === 0 && sw.getSourceKind() !== 'cache') {
+        allFriends = await refreshFriendsFromApi();
+      }
+
+      const groupLookup = new Map<number, string>();
+      for (const group of allGroups) groupLookup.set(group.id, group.name);
+
+      const resolveUser = async (label: string, value: string): Promise<number | undefined> => {
+        if (value === '@me') return (await getMe()).id;
+        const asNum = Number(value);
+        if (!Number.isNaN(asNum) && String(asNum) === value) return asNum;
+
+        const needle = value.toLowerCase();
+        const me = await getMe();
+        const unique = [...new Map(
+          [...allFriends, me]
+            .filter((user) => formatName(user).toLowerCase().includes(needle))
+            .map((user) => [user.id, user]),
+        ).values()];
+
+        if (unique.length === 0) {
+          logger.error(`No user matching "${value}" for ${label}.`);
+          process.exit(1);
+        }
+        if (unique.length > 1) {
+          logger.error(
+            `Ambiguous ${label} "${value}" — matches: ${unique.map((user) => `"${formatName(user)}"`).join(', ')}. Be more specific.`,
+          );
+          process.exit(1);
+        }
+        return unique[0].id;
+      };
+
+      const resolveGroupId = async (value?: string): Promise<number | undefined> => {
+        if (value === undefined) return undefined;
+        const asNum = Number(value);
+        if (!Number.isNaN(asNum) && String(asNum) === value) {
+          ensureExpenseGroupAllowed(this, asNum, 'expenses add');
+          return asNum;
+        }
+
+        const needle = value.toLowerCase();
+        let matches = allGroups.filter((group) => group.name.toLowerCase().includes(needle));
+        if (matches.length === 0 && !groupsLoadedFromApi && sw.getSourceKind() !== 'cache') {
+          allGroups = await refreshGroupsFromApi();
+          groupLookup.clear();
+          for (const group of allGroups) groupLookup.set(group.id, group.name);
+          matches = allGroups.filter((group) => group.name.toLowerCase().includes(needle));
+        }
+
+        if (matches.length === 0) {
+          logger.error(`No group matching "${value}".`);
+          process.exit(1);
+        }
+        if (matches.length > 1) {
+          logger.error(
+            `Ambiguous group "${value}" — matches: ${matches.map((group) => `"${group.name}"`).join(', ')}. Be more specific.`,
+          );
+          process.exit(1);
+        }
+        ensureExpenseGroupAllowed(this, matches[0].id, 'expenses add');
+        return matches[0].id;
+      };
+
+      const resolveFriendId = async (value?: string): Promise<number | undefined> => {
+        if (value === undefined) return undefined;
+        const asNum = Number(value);
+        if (!Number.isNaN(asNum) && String(asNum) === value) {
+          ensureExpenseFriendAllowed(this, asNum, 'expenses add');
+          return asNum;
+        }
+
+        const needle = value.toLowerCase();
+        let matches = allFriends.filter((friend) =>
+          `${friend.firstName} ${friend.lastName}`.toLowerCase().includes(needle)
+          || (friend.firstName ?? '').toLowerCase().includes(needle),
+        );
+        if (matches.length === 0 && !friendsLoadedFromApi && sw.getSourceKind() !== 'cache') {
+          allFriends = await refreshFriendsFromApi();
+          matches = allFriends.filter((friend) =>
+            `${friend.firstName} ${friend.lastName}`.toLowerCase().includes(needle)
+            || (friend.firstName ?? '').toLowerCase().includes(needle),
+          );
+        }
+
+        if (matches.length === 0) {
+          logger.error(`No friend matching "${value}".`);
+          process.exit(1);
+        }
+        if (matches.length > 1) {
+          logger.error(
+            `Ambiguous friend "${value}" — matches: ${matches.map((friend) => `"${formatName(friend)}"`).join(', ')}. Be more specific.`,
+          );
+          process.exit(1);
+        }
+        ensureExpenseFriendAllowed(this, matches[0].id, 'expenses add');
+        return matches[0].id;
+      };
+
+      const resolveCategoryId = async (value?: string): Promise<number | undefined> => {
+        if (value === undefined) return undefined;
+        const asNum = Number(value);
+        if (!Number.isNaN(asNum) && String(asNum) === value) return asNum;
+        const categories = await sw.categories.list();
+        const needle = value.toLowerCase();
+        const matches = categories.filter((category) => category.name.toLowerCase().includes(needle));
+        if (matches.length === 0) {
+          logger.error(`No category matching "${value}".`);
+          process.exit(1);
+        }
+        if (matches.length > 1) {
+          logger.error(
+            `Ambiguous category "${value}" — matches: ${matches.map((category) => `"${category.name}"`).join(', ')}. Be more specific.`,
+          );
+          process.exit(1);
+        }
+        return matches[0].id;
+      };
+
+      const payerId = await resolveUser('--payer', opts.payer ?? '@me');
+      const groupId = await resolveGroupId(opts.group);
+      const friendId = await resolveFriendId(opts.friend);
+      const categoryId = await resolveCategoryId(opts.category);
+      const date = parseDate(opts.date ?? new Date().toISOString().slice(0, 10));
+      const me = await getMe();
+      const currencyCode = opts.currency ?? me.defaultCurrency ?? 'USD';
+      const shares = (opts.userShare ?? []).map(parseExpenseShareInput);
+
+      const created = await sw.expenses.create(buildExpenseCreateParams({
+        description,
+        cost,
+        date,
+        currencyCode,
+        ...(groupId !== undefined && { groupId }),
+        ...(friendId !== undefined && { friendId }),
+        ...(opts.notes !== undefined && { details: opts.notes }),
+        ...(categoryId !== undefined && { categoryId }),
+        ...(payerId !== undefined && shares.length > 0 && { shares }),
+        ...(payerId !== undefined && shares.length === 0 && { splitEqually: opts.splitEqually ?? true }),
+      }));
+
+      renderOne({
+        id: created.id,
+        description: created.description,
+        cost: created.cost,
+        currency: created.currencyCode,
+        date: created.date ?? '',
+        category: created.category?.name ?? '',
+        group: created.groupId !== null ? (groupLookup.get(created.groupId ?? -1) ?? String(created.groupId ?? '')) : '',
+        payment: String(created.payment),
+      }, fmt, { tuiMode });
+    });
+
+  expenses.command('delete <id>')
+    .description('Delete an expense')
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .action(async function (this: Command, id: string, opts: { yes?: boolean }) {
+      const logger = createLogger(this, 'expenses');
+      const sw = getDataClient(this);
+      const tuiMode = isTuiDefault(this);
+
+      ensureDeleteExpenseAllowed(this);
+
+      const expenseId = Number(id);
+      if (!Number.isInteger(expenseId) || expenseId <= 0) {
+        logger.error(`Invalid expense id "${id}".`);
+        process.exit(1);
+      }
+
+      if (!opts.yes) {
+        const expense = await sw.expenses.get({ id: expenseId });
+        if (tuiMode) writeTuiInfoSpacer(true);
+        logger.info(`Delete expense ${expense.id}: ${expense.description} (${expense.cost} ${expense.currencyCode})?`);
+        const answer = await prompts({
+          type: 'confirm',
+          name: 'confirmed',
+          message: 'Delete this expense?',
+          initial: false,
+        });
+        if (answer.confirmed !== true) {
+          logger.warn('Delete aborted.');
+          process.exit(1);
+        }
+      }
+
+      await sw.expenses.delete({ id: expenseId });
+      logger.success(`Deleted expense ${expenseId}.`);
     });
 
   addOutputOption(expenses.command('get <id>'))
