@@ -55,8 +55,50 @@ function sendNotFound(res: Parameters<ReturnType<typeof createServer>['on']>[1])
   res.end(JSON.stringify({ error: 'not found' }));
 }
 
-function buildCreatedExpense(state: MockServerState, body: Record<string, string>): Record<string, unknown> {
+function parseUsersFromBody(body: Record<string, string>): Array<{ userId: number; paidShare: string; owedShare: string }> {
+  // The SDK encodes arrays as users[0][user_id]=..., but after URLSearchParams normalization
+  // the brackets become part of the key. After camelCase normalization the key might be
+  // users[0][userId] or users0UserId depending on parseRequestBody.
+  // We search for any key pattern that contains digit-indexed user properties.
+  const userMap = new Map<number, { userId: number; paidShare: string; owedShare: string }>();
+
+  for (const [key, value] of Object.entries(body)) {
+    // Match both bracket-style keys (after URLSearchParams decoding keeps brackets)
+    // and camelCase-normalized variants
+    let match = key.match(/^users\[(\d+)\]\[user_id\]$/) ??
+                key.match(/^users\[(\d+)\]\[userId\]$/) ??
+                key.match(/^users\[(\d+)\]\.user_id$/) ??
+                key.match(/^users\[(\d+)\]\.userId$/);
+    if (match) {
+      const idx = Number(match[1]);
+      if (!userMap.has(idx)) userMap.set(idx, { userId: 0, paidShare: '0.00', owedShare: '0.00' });
+      userMap.get(idx)!.userId = Number(value);
+      continue;
+    }
+
+    match = key.match(/^users\[(\d+)\]\[paid_share\]$/) ??
+            key.match(/^users\[(\d+)\]\[paidShare\]$/);
+    if (match) {
+      const idx = Number(match[1]);
+      if (!userMap.has(idx)) userMap.set(idx, { userId: 0, paidShare: '0.00', owedShare: '0.00' });
+      userMap.get(idx)!.paidShare = value;
+      continue;
+    }
+
+    match = key.match(/^users\[(\d+)\]\[owed_share\]$/) ??
+            key.match(/^users\[(\d+)\]\[owedShare\]$/);
+    if (match) {
+      const idx = Number(match[1]);
+      if (!userMap.has(idx)) userMap.set(idx, { userId: 0, paidShare: '0.00', owedShare: '0.00' });
+      userMap.get(idx)!.owedShare = value;
+    }
+  }
+  return [...userMap.values()];
+}
+
+function buildCreatedExpense(state: MockServerState, body: Record<string, string>, fixture: Fixture): Record<string, unknown> {
   const now = new Date().toISOString();
+  const users = parseUsersFromBody(body);
   const expense = {
     id: state.nextExpenseId++,
     groupId: body.groupId !== undefined ? Number(body.groupId) : null,
@@ -70,7 +112,8 @@ function buildCreatedExpense(state: MockServerState, body: Record<string, string
     category: body.categoryId !== undefined ? { id: Number(body.categoryId), name: '' } : undefined,
     createdAt: now,
     updatedAt: now,
-    users: [],
+    createdBy: { id: fixture.current_user.id },
+    users,
   };
   state.expenses.push(expense);
   return expense;
@@ -166,8 +209,10 @@ export async function startSplitwiseMockServer(): Promise<{
       if (path === '/get_expenses') {
         const limit = Number(url.searchParams.get('limit') ?? state.expenses.length);
         const offset = Number(url.searchParams.get('offset') ?? 0);
-        const from = url.searchParams.get('from') ?? null;
-        const to = url.searchParams.get('to') ?? null;
+        const datedAfter = url.searchParams.get('dated_after') ?? url.searchParams.get('datedAfter') ?? null;
+        const datedBefore = url.searchParams.get('dated_before') ?? url.searchParams.get('datedBefore') ?? null;
+        const from = url.searchParams.get('from') ?? datedAfter;
+        const to = url.searchParams.get('to') ?? datedBefore;
         const groupId = url.searchParams.get('group_id') ?? url.searchParams.get('groupId');
         const rows = state.expenses.filter((expense) => {
           const date = String(expense.date ?? '');
@@ -194,7 +239,7 @@ export async function startSplitwiseMockServer(): Promise<{
 
       if (path === '/create_expense') {
         state.writeRequests.push({ method: 'POST', path, body });
-        const expense = buildCreatedExpense(state, body);
+        const expense = buildCreatedExpense(state, body, fixture);
         sendJson(res, { expenses: [expense] });
         return;
       }

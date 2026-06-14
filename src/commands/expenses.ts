@@ -27,6 +27,14 @@ import {
 } from '../lib/output.js';
 import { parseDate } from '../lib/dates.js';
 import { buildExpenseCreateParams, parseExpenseShareInput } from '../lib/expense-writes.js';
+import {
+  parseImportFile,
+  normalizeToCreateParams,
+  exactMatch,
+  intelligentMatch,
+  type ImportExpenseRecord,
+  type ImportContext,
+} from '../lib/import.js';
 
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
 const MIN_TRUNCATED_WIDTH = 13; // 10 visible characters + "..."
@@ -1005,6 +1013,152 @@ export function registerExpenses(program: Command): void {
 
       await sw.expenses.delete({ id: expenseId });
       logger.success(`Deleted expense ${expenseId}.`);
+    });
+
+  expenses
+    .command('import <file>')
+    .description('Import expenses from a YAML or JSON file')
+    .option('--dry-run', 'Preview changes without writing')
+    .option('--matcher <type>', 'Duplicate matching strategy: exact|intelligent', 'exact')
+    .option('--on-duplicate <action>', 'Action on duplicate: skip|update', 'skip')
+    .option('--no-cache', 'Do not cache results')
+    .option('--group <id>', 'Filter expenses by group id')
+    .option('-o, --output <format>', 'Output format')
+    .action(async function (this: Command, file: string, opts: any) {
+      const logger = createLogger(this, 'expenses import');
+      const tuiMode = isTuiDefault(this);
+      ensureCreateExpenseAllowed(this);
+
+      if (tuiMode) writeTuiInfoSpacer(true);
+
+      const progress = createTuiProgress(tuiMode);
+
+      // Parse import file
+      let records: ImportExpenseRecord[];
+      try {
+        progress.start('Parsing import file...');
+        records = parseImportFile(file);
+        progress.stop(`Parsed ${records.length} record(s)`, 'success');
+      } catch (err) {
+        progress.fail(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+
+      const sw = getDataClient(this);
+      const profile = resolveProfile(this);
+
+      // Fetch current state for duplicate matching
+      let currentUser;
+      let allExpenses: Expense[] = [];
+      let friends: any[] = [];
+      let groups: any[] = [];
+
+      try {
+        progress.start('Fetching reference data...');
+        [currentUser, friends, groups] = await Promise.all([
+          sw.users.getCurrent(),
+          sw.friends.list({}),
+          sw.groups.list({}),
+        ]);
+        progress.stop('Reference data loaded', 'success');
+      } catch (err) {
+        progress.fail('Failed to fetch reference data.');
+        logger.error((err as Error).message);
+        process.exit(1);
+      }
+
+      // Load existing expenses for duplicate detection
+      try {
+        progress.start('Fetching existing expenses...');
+        // Estimate date range from records
+        const dates = records
+          .map((r) => String(r.date ?? '').trim())
+          .filter(Boolean)
+          .sort();
+        const datedAfter = dates[0] ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10);
+        const datedBefore = dates[dates.length - 1] ?? new Date().toISOString().slice(0, 10);
+
+        const allExp = await sw.expenses.list({
+          datedAfter,
+          datedBefore,
+          limit: 1000,
+        });
+        allExpenses = allExp ?? [];
+        progress.stop(`Loaded ${allExpenses.length} existing expense(s)`, 'success');
+      } catch (err) {
+        progress.fail('Failed to fetch existing expenses.');
+        logger.error((err as Error).message);
+        process.exit(1);
+      }
+
+      // Build import context
+      const context: ImportContext = {
+        groups: groups.map((g: any) => ({ id: g.id, name: g.name })),
+        friends: friends.map((f: any) => ({ id: f.id, firstName: f.firstName, lastName: f.lastName })),
+        meId: currentUser.id,
+        lookupMap: new Map(),
+      };
+
+      // Process records
+      const created: any[] = [];
+      const skipped: any[] = [];
+      const errors: any[] = [];
+
+      progress.start('Processing records...');
+      for (const record of records) {
+        const params = normalizeToCreateParams(record, context);
+        if (!params) {
+          errors.push({ record, reason: 'Missing required fields (description, cost)' });
+          continue;
+        }
+
+        // Find duplicates
+        const matcher = opts.matcher === 'intelligent' ? intelligentMatch : exactMatch;
+        const duplicate = allExpenses.find((e) => matcher(params, e, context.meId));
+
+        if (duplicate) {
+          if (opts.onDuplicate === 'update' && !opts.dryRun) {
+            // Future: implement update logic in Phase 3
+            skipped.push({ record, matched: duplicate, reason: 'Update not yet implemented' });
+          } else {
+            skipped.push({ record, matched: duplicate });
+          }
+        } else {
+          if (!opts.dryRun) {
+            try {
+              const created_expense = await sw.expenses.create(params);
+              created.push({ record, expense: created_expense });
+              allExpenses.push(created_expense); // Track for subsequent records
+            } catch (err) {
+              errors.push({ record, reason: (err as Error).message });
+            }
+          } else {
+            created.push({ record, expense: { id: -1 } as any }); // Mock for dry-run
+          }
+        }
+      }
+
+      progress.stop('Done', 'success');
+
+      // Output summary
+      if (tuiMode) writeTuiInfoSpacer(true);
+      logger.info(`Import Summary:`);
+      logger.info(`  Created: ${created.length}`);
+      logger.info(`  Skipped: ${skipped.length}`);
+      logger.info(`  Errors:  ${errors.length}`);
+
+      if (opts.dryRun) {
+        logger.warn('(Dry-run mode: no changes written)');
+      }
+
+      if (errors.length > 0) {
+        logger.error(`\nErrors:`);
+        for (const { record, reason } of errors) {
+          logger.error(`  ${record.description}: ${reason}`);
+        }
+      }
     });
 
   addOutputOption(expenses.command('get <id>'))
