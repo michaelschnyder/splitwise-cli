@@ -32,6 +32,7 @@ import {
   normalizeToCreateParams,
   exactMatch,
   intelligentMatch,
+  buildExpenseUpdateParams,
   type ImportExpenseRecord,
   type ImportContext,
 } from '../lib/import.js';
@@ -1104,6 +1105,7 @@ export function registerExpenses(program: Command): void {
       // Process records
       const created: any[] = [];
       const skipped: any[] = [];
+      const updated: any[] = [];
       const errors: any[] = [];
 
       progress.start('Processing records...');
@@ -1120,8 +1122,21 @@ export function registerExpenses(program: Command): void {
 
         if (duplicate) {
           if (opts.onDuplicate === 'update' && !opts.dryRun) {
-            // Future: implement update logic in Phase 3
-            skipped.push({ record, matched: duplicate, reason: 'Update not yet implemented' });
+            const updateParams = buildExpenseUpdateParams(duplicate.id, params, duplicate);
+            if (updateParams) {
+              try {
+                const updatedExpense = await sw.expenses.update(updateParams);
+                updated.push({ record, expense: updatedExpense });
+                // Replace the old entry in allExpenses so subsequent records see the updated version
+                const idx = allExpenses.indexOf(duplicate);
+                if (idx >= 0) allExpenses[idx] = updatedExpense;
+              } catch (err) {
+                errors.push({ record, reason: (err as Error).message });
+              }
+            } else {
+              // No actual changes to make
+              skipped.push({ record, matched: duplicate });
+            }
           } else {
             skipped.push({ record, matched: duplicate });
           }
@@ -1146,6 +1161,7 @@ export function registerExpenses(program: Command): void {
       if (tuiMode) writeTuiInfoSpacer(true);
       logger.info(`Import Summary:`);
       logger.info(`  Created: ${created.length}`);
+      logger.info(`  Updated: ${updated.length}`);
       logger.info(`  Skipped: ${skipped.length}`);
       logger.info(`  Errors:  ${errors.length}`);
 

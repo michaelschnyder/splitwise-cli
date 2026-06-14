@@ -193,17 +193,20 @@ export function exactMatch(
 // Intelligent duplicate matcher with fuzzy matching
 // ─────────────────────────────────────────────────────────────────────────────
 
-const KEYBOARD_ADJACENT: Record<string, string[]> = {
-  '0': ['1', '9'],
-  '1': ['0', '2'],
-  '2': ['1', '3'],
-  '3': ['2', '4'],
-  '4': ['3', '5'],
-  '5': ['4', '6'],
-  '6': ['5', '7'],
-  '7': ['6', '8'],
-  '8': ['7', '9'],
-  '9': ['8', '0'],
+// Top-row digit key adjacency on a standard QWERTY keyboard.
+// Each digit is adjacent to its immediate left and right neighbours.
+// Numpad layout (7-8-9 / 4-5-6 / 1-2-3 / 0) adds vertical neighbours.
+export const KEYBOARD_ADJACENT: Record<string, string[]> = {
+  '0': ['1', '9'],        // top-row wrap; numpad 0 is wide key, closest numpad: 1,2,3
+  '1': ['0', '2', '4'],   // top-row; numpad 1 below 4
+  '2': ['1', '3', '5'],   // top-row; numpad 2 below 5
+  '3': ['2', '4', '6'],   // top-row; numpad 3 below 6
+  '4': ['3', '5', '1', '7'], // numpad 4: left of 5, above 1, below 7
+  '5': ['4', '6', '2', '8'], // numpad 5: centre
+  '6': ['5', '7', '3', '9'], // numpad 6: right of 5, above 3, below 9
+  '7': ['6', '8', '4'],   // top-row; numpad 7 above 4
+  '8': ['7', '9', '5'],   // top-row; numpad 8 above 5
+  '9': ['8', '0', '6'],   // top-row wrap; numpad 9 above 6
 };
 
 function isDigitAdjacentTypo(actual: string, expected: string): boolean {
@@ -300,6 +303,66 @@ export function intelligentMatch(
   }
 
   return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Update param builder: only include changed fields
+// ─────────────────────────────────────────────────────────────────────────────
+
+import type { ExpenseUpdateParams } from 'splitwise';
+
+export function buildExpenseUpdateParams(
+  id: number,
+  candidate: ExpenseCreateParams,
+  existing: Expense,
+): ExpenseUpdateParams | null {
+  const updates: ExpenseUpdateParams = { id };
+  let hasChanges = false;
+
+  if (candidate.description !== undefined && candidate.description !== existing.description) {
+    updates.description = candidate.description;
+    hasChanges = true;
+  }
+  if (candidate.cost !== undefined && candidate.cost !== existing.cost) {
+    updates.cost = candidate.cost;
+    hasChanges = true;
+  }
+  if (candidate.currencyCode !== undefined && candidate.currencyCode !== existing.currencyCode) {
+    updates.currencyCode = candidate.currencyCode;
+    hasChanges = true;
+  }
+  if (candidate.date !== undefined && candidate.date !== existing.date) {
+    updates.date = candidate.date;
+    hasChanges = true;
+  }
+  if (candidate.details !== undefined && candidate.details !== existing.details) {
+    updates.details = candidate.details;
+    hasChanges = true;
+  }
+  if (candidate.groupId !== undefined && candidate.groupId !== existing.groupId) {
+    updates.groupId = candidate.groupId;
+    hasChanges = true;
+  }
+  if (candidate.categoryId !== undefined && candidate.categoryId !== existing.category?.id) {
+    updates.categoryId = candidate.categoryId;
+    hasChanges = true;
+  }
+  if (candidate.users !== undefined) {
+    const candidateSorted = [...candidate.users]
+      .sort((a, b) => a.userId - b.userId)
+      .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
+      .join('|');
+    const existingSorted = [...(existing.users ?? [])]
+      .sort((a, b) => a.userId - b.userId)
+      .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
+      .join('|');
+    if (candidateSorted !== existingSorted) {
+      updates.users = candidate.users;
+      hasChanges = true;
+    }
+  }
+
+  return hasChanges ? updates : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
