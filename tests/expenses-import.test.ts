@@ -593,30 +593,147 @@ describe('expenses import E2E', () => {
     }
   });
 
-  it('respects --dry-run flag', async () => {
+  it('respects --dry-run flag and does not write any expenses to backend', async () => {
     const ctx = await setupE2EEnv();
     const importFile = join(ctx.tempDir, 'expenses.json');
     const content = JSON.stringify([
       {
-        description: 'Dry run test',
+        description: 'Dry run test expense 1',
         cost: '25.00',
         date: '2024-01-15',
         currency: 'USD',
         splits: [
-          { userId: 123, paidShare: '25', owedShare: '25' },
+          { userId: 123, paidShare: '25', owedShare: '12.50' },
+          { userId: 201, owedShare: '12.50' },
         ],
+      },
+      {
+        description: 'Dry run test expense 2',
+        cost: '50.00',
+        date: '2024-01-16',
+        currency: 'USD',
       },
     ]);
     writeFileSync(importFile, content);
 
     try {
-      const result = await runCli([
+      // Count expenses before dry-run
+      const beforeResult = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'list', '--all', '-o', 'json',
+      ], ctx.tempDir, ctx.env);
+      const beforeExpenses = JSON.parse(beforeResult.stdout);
+
+      // Run import with --dry-run
+      const dryRunResult = await runCli([
         '--config-dir', ctx.configDir,
         '--profile', ctx.profileName,
         'expenses', 'import', importFile, '--dry-run',
       ], ctx.tempDir, ctx.env);
 
-      assert.match(result.stderr, /Dry-run mode: no changes written/);
+      // Verify dry-run warning message
+      assert.match(dryRunResult.stderr, /Dry-run mode: no changes written/);
+      assert.match(dryRunResult.stderr, /Created: 2/);
+
+      // Count expenses after dry-run
+      const afterResult = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'list', '--all', '-o', 'json',
+      ], ctx.tempDir, ctx.env);
+      const afterExpenses = JSON.parse(afterResult.stdout);
+
+      // Verify that NO expenses were created (count should be identical)
+      assert.equal(
+        afterExpenses.length,
+        beforeExpenses.length,
+        `Expected ${beforeExpenses.length} expenses before and after dry-run, but got ${afterExpenses.length} after`,
+      );
+
+      // Verify the descriptions from the import file do NOT exist
+      const descriptions = afterExpenses.map((e: any) => e.description);
+      assert.ok(
+        !descriptions.includes('Dry run test expense 1'),
+        'Expense 1 should not be created during dry-run',
+      );
+      assert.ok(
+        !descriptions.includes('Dry run test expense 2'),
+        'Expense 2 should not be created during dry-run',
+      );
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('respects --dry-run with --on-duplicate=update and does not modify existing expenses', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+
+    // First, create an expense
+    const createResult = await runCli([
+      '--config-dir', ctx.configDir,
+      '--profile', ctx.profileName,
+      'expenses', 'add',
+      '-d', 'Original expense',
+      '-a', '30.00',
+      '--date', '2024-01-15',
+      '-C', 'USD',
+    ], ctx.tempDir, ctx.env);
+
+    // Extract expense ID from the output (format: "id                 123456789")
+    const idMatch = createResult.stdout.match(/^id\s+(\d+)/m);
+    assert.ok(idMatch, 'Could not find expense ID in add output');
+    const expenseIdToUpdate = idMatch[1];
+
+    // Prepare import file with modified version of the same expense (exact match)
+    const content = JSON.stringify([
+      {
+        description: 'Original expense',
+        cost: '50.00',
+        date: '2024-01-15',
+        currency: 'USD',
+      },
+    ]);
+    writeFileSync(importFile, content);
+
+    try {
+      // Get expense details before dry-run
+      const beforeUpdateResult = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'get', expenseIdToUpdate, '-o', 'json',
+      ], ctx.tempDir, ctx.env);
+      const beforeUpdate = JSON.parse(beforeUpdateResult.stdout);
+      const costBefore = beforeUpdate.cost;
+
+      // Run import with --dry-run --on-duplicate=update
+      const dryRunUpdateResult = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile, '--dry-run', '--on-duplicate', 'update',
+      ], ctx.tempDir, ctx.env);
+
+      // Verify the command succeeded and showed dry-run warning
+      assert.match(dryRunUpdateResult.stderr, /Dry-run mode: no changes written/);
+      // In dry-run with duplicate matched, it should be skipped (not updated)
+      assert.match(dryRunUpdateResult.stderr, /Updated: 0/);
+
+      // Get expense details after dry-run
+      const afterUpdateResult = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'get', expenseIdToUpdate, '-o', 'json',
+      ], ctx.tempDir, ctx.env);
+      const afterUpdate = JSON.parse(afterUpdateResult.stdout);
+      const costAfter = afterUpdate.cost;
+
+      // Verify that the expense was NOT modified (cost should remain 30.00)
+      assert.equal(
+        costAfter,
+        costBefore,
+        `Cost should not be updated during dry-run. Before: ${costBefore}, After: ${costAfter}`,
+      );
     } finally {
       await teardownE2EEnv(ctx);
     }
