@@ -1217,6 +1217,7 @@ export function registerExpenses(program: Command): void {
           .map((r) => String(r.date ?? '').trim().slice(0, 10))
           .filter(Boolean)
           .sort();
+        const hasUndatedRecords = records.some((r) => String(r.date ?? '').trim().length === 0);
         const datedAfter = dates[0]
           ? shiftIsoDate(dates[0], -1)
           : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -1239,6 +1240,20 @@ export function registerExpenses(program: Command): void {
           fetchParams.groupId = [...groupTargets][0];
         } else if (matchScope === 'target' && friendTargets.size === 1 && groupTargets.size === 0) {
           fetchParams.friendId = [...friendTargets][0];
+        }
+
+        // Undated records can be created with provider-default dates (often today).
+        // If a single target is known, fetch all target expenses to avoid missing rerun duplicates.
+        if (
+          hasUndatedRecords
+          && matchScope === 'target'
+          && ((groupTargets.size === 1 && friendTargets.size === 0) || (friendTargets.size === 1 && groupTargets.size === 0))
+        ) {
+          delete fetchParams.datedAfter;
+          delete fetchParams.datedBefore;
+          delete fetchParams.from;
+          delete fetchParams.to;
+          logger.debug('Detected undated import rows; fetching full target scope without date bounds for duplicate detection.');
         }
 
         for await (const page of sw.expenses.list(fetchParams).byPage()) {

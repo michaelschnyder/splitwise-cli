@@ -404,6 +404,17 @@ describe('exact matcher', () => {
     assert.ok(!exactMatch(candidate, existing, meId));
   });
 
+  it('matches when cost differs only by trailing zeros', () => {
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.0',
+      currencyCode: 'USD',
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(exactMatch(candidate, existing, meId));
+  });
+
   it('does not match when not created by me', () => {
     const existing: Expense = {
       id: 1,
@@ -580,6 +591,17 @@ describe('intelligent matcher', () => {
       createdBy: { id: meId },
     } as any;
     assert.ok(intelligentMatch(candidate_with_typo, existing, meId));
+  });
+
+  it('matches when cost differs only by trailing zeros', () => {
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.0',
+      currencyCode: 'USD',
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(intelligentMatch(candidate, existing, meId));
   });
 
   it('matches with date within ±5 days', () => {
@@ -960,6 +982,55 @@ describe('expenses import E2E', () => {
       assert.match(result.stdout, /Duplicate dinner/);
       assert.match(result.stdout, /created\s+1/i);
       assert.match(result.stdout, /skipped\s+1/i);
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('does not re-create undated target-scoped rows on rerun dry-run', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses-undated-rerun.json');
+    const content = JSON.stringify([
+      {
+        description: 'Dated anchor expense',
+        cost: '10.00',
+        date: '2024-01-15',
+        currency: 'USD',
+        group: 94002501,
+      },
+      {
+        description: 'Undated rerun expense',
+        cost: '12.00',
+        currency: 'USD',
+        group: 94002501,
+      },
+    ]);
+    writeFileSync(importFile, content);
+
+    try {
+      const firstRun = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--matcher', 'intelligent',
+        '--match-scope', 'target',
+        '--on-duplicate', 'skip',
+      ], ctx.tempDir, ctx.env);
+      assert.equal(firstRun.status, 0);
+      assert.match(firstRun.stdout, /created\s+2/i);
+
+      const rerunDry = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--matcher', 'intelligent',
+        '--match-scope', 'target',
+        '--on-duplicate', 'skip',
+        '--dry-run',
+      ], ctx.tempDir, ctx.env);
+      assert.equal(rerunDry.status, 0);
+      assert.match(rerunDry.stdout, /created\s+0/i);
+      assert.match(rerunDry.stdout, /skipped\s+2/i);
     } finally {
       await teardownE2EEnv(ctx);
     }

@@ -222,7 +222,7 @@ export function exactMatch(
 
   // Exact match on core fields
   if (candidate.description !== existing.description) return false;
-  if (candidate.cost !== existing.cost) return false;
+  if (!moneyEquals(candidate.cost, existing.cost)) return false;
   if ((candidate.currencyCode ?? 'USD') !== (existing.currencyCode ?? 'USD')) return false;
 
   // Exact match on date (normalize timestamped values to YYYY-MM-DD)
@@ -312,7 +312,25 @@ function dateFuzzyMatch(candidateDate: string | undefined, existingDate: string 
   return true;
 }
 
+function normalizedMoney(value: string | number | undefined): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const parsed = Number(String(value).trim());
+  if (!Number.isFinite(parsed)) return undefined;
+  if (Object.is(parsed, -0)) return '0.00';
+  return parsed.toFixed(2);
+}
+
+function moneyEquals(candidateCost: string | undefined, existingCost: string | undefined): boolean {
+  const candidateNormalized = normalizedMoney(candidateCost);
+  const existingNormalized = normalizedMoney(existingCost);
+  if (candidateNormalized !== undefined && existingNormalized !== undefined) {
+    return candidateNormalized === existingNormalized;
+  }
+  return String(candidateCost ?? '').trim() === String(existingCost ?? '').trim();
+}
+
 function costFuzzyMatch(candidateCost: string, existingCost: string): boolean {
+  if (moneyEquals(candidateCost, existingCost)) return true;
   if (candidateCost === existingCost) return true;
 
   // Extract digits only for comparison
@@ -435,7 +453,7 @@ export function buildExpenseUpdateParams(
     updates.description = candidate.description;
     hasChanges = true;
   }
-  if (candidate.cost !== undefined && candidate.cost !== existing.cost) {
+  if (candidate.cost !== undefined && !moneyEquals(candidate.cost, existing.cost)) {
     updates.cost = candidate.cost;
     hasChanges = true;
   }
