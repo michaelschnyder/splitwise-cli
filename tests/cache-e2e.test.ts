@@ -67,10 +67,12 @@ function canonicalizeById(rawJson: string): unknown {
 
 function startMockServer() {
   let requestCount = 0;
+  const requestCountsByPath: Record<string, number> = {};
   const server = createServer((req, res) => {
     requestCount += 1;
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const path = url.pathname.replace(/^\/api\/v3\.0/, '') || url.pathname;
+    requestCountsByPath[path] = (requestCountsByPath[path] ?? 0) + 1;
     const sendJson = (payload: unknown) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(payload));
@@ -157,6 +159,7 @@ function startMockServer() {
           server.close(() => resolveClose());
         }),
         getRequestCount: () => requestCount,
+        getRequestCountForPath: (path: string) => requestCountsByPath[path] ?? 0,
       });
     });
   });
@@ -168,7 +171,7 @@ async function setupE2EEnvironment(): Promise<{
   profileName: string;
   credentialName: string;
   env: NodeJS.ProcessEnv;
-  mockServer: { baseUrl: string; close: () => Promise<void>; getRequestCount: () => number };
+  mockServer: { baseUrl: string; close: () => Promise<void>; getRequestCount: () => number; getRequestCountForPath: (path: string) => number };
 }> {
   const mockServer = await startMockServer();
   const tempDir = mkdtempSync(join(tmpdir(), 'splitwise-cli-e2e-'));
@@ -202,7 +205,7 @@ async function teardownE2EEnvironment(input: {
   profileName: string;
   credentialName: string;
   env: NodeJS.ProcessEnv;
-  mockServer: { close: () => Promise<void>; getRequestCount: () => number };
+  mockServer: { close: () => Promise<void>; getRequestCount: () => number; getRequestCountForPath: (path: string) => number };
 }): Promise<void> {
   await runCli(['--config-dir', input.configDir, 'profiles', 'remove', input.profileName], input.tempDir, input.env);
   await runCli(['--config-dir', input.configDir, 'login', 'remove', input.credentialName], input.tempDir, input.env);
@@ -484,6 +487,42 @@ test('e2e cache delete removes a cache entry by id', async () => {
     ], e2e.tempDir, e2e.env)) as Array<Record<string, unknown>>;
 
     assert.equal(finalRows.length, 0);
+  } finally {
+    await teardownE2EEnvironment(e2e);
+  }
+});
+
+test('e2e cache add expenses does not export comments, while comments can be exported separately', async () => {
+  const e2e = await setupE2EEnvironment();
+
+  try {
+    await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'add',
+      'expenses',
+      '--from', '2026-01-01',
+      '--to', '2026-01-31',
+      '--target',
+      'local',
+    ], e2e.tempDir, e2e.env);
+
+    assert.equal(e2e.mockServer.getRequestCountForPath('/get_comments'), 0);
+
+    await runCliOrThrow([
+      '--config-dir', e2e.configDir,
+      '--profile', e2e.profileName,
+      'cache',
+      'add',
+      'comments',
+      '--from', '2026-01-01',
+      '--to', '2026-01-31',
+      '--target',
+      'local',
+    ], e2e.tempDir, e2e.env);
+
+    assert.equal(e2e.mockServer.getRequestCountForPath('/get_comments') > 0, true);
   } finally {
     await teardownE2EEnvironment(e2e);
   }

@@ -62,6 +62,8 @@ type CacheEntityOption = CacheTargetOption & {
   friend?: string;
 };
 
+const CACHE_EXPORTABLE_ENTITIES = ['expenses', 'comments', 'friends', 'groups', 'lookup', 'all'] as const satisfies readonly CacheEntity[];
+
 function addCacheTargetOption(cmd: Command): Command {
   return cmd.option('--target <target>', 'Cache target: local | user | global');
 }
@@ -202,6 +204,16 @@ async function exportComments(sw: ReturnType<typeof getClient>, expenses: Expens
   return { entity: 'comments', items };
 }
 
+async function exportCommentsForScope(
+  sw: ReturnType<typeof getClient>,
+  scope: CacheScope,
+  progress: ExportProgress,
+): Promise<{ expenses: ExpensesCachePayload; comments: CommentsCachePayload }> {
+  const expenses = await exportExpensesWithProgress(sw, scope, progress);
+  const comments = await exportComments(sw, expenses.items, progress);
+  return { expenses, comments };
+}
+
 async function exportFriends(sw: ReturnType<typeof getClient>, progress: ExportProgress): Promise<FriendsCachePayload> {
   updateExportProgress(progress, 'Loading all friends...');
   const items = await sw.friends.list();
@@ -317,7 +329,7 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
 
   let groupId: number | undefined;
   let friendId: number | undefined;
-  if (entity === 'expenses' || entity === 'all') {
+  if (entity === 'expenses' || entity === 'comments' || entity === 'all') {
     groupId = await resolveGroupId(sw, options.group);
     friendId = await resolveFriendId(sw, options.friend);
   }
@@ -325,7 +337,11 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
   const latestExpenseEntry = refreshMode
     ? findLatestCacheEntry(target, { entity: 'expenses', accountUserId: currentUser.id, profileName })
     : undefined;
-  const latestScope = latestExpenseEntry?.scope;
+  const latestCommentEntry = refreshMode && entity === 'comments'
+    ? findLatestCacheEntry(target, { entity: 'comments', accountUserId: currentUser.id, profileName })
+    : undefined;
+  const latestScope = (entity === 'comments' ? latestCommentEntry : latestExpenseEntry)?.scope
+    ?? latestExpenseEntry?.scope;
   const progress = createTuiProgress(isTuiDefault(cmd));
   const baseExpenseScope = {
     from: options.from
@@ -338,7 +354,7 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
     friendId: options.friend !== undefined ? friendId : latestScope?.friendId ?? friendId,
   } satisfies CacheScope;
   const refreshPlan = refreshMode
-    ? deriveExpenseRefreshPlan({ latestEntry: latestExpenseEntry, baseScope: baseExpenseScope })
+    ? deriveExpenseRefreshPlan({ latestEntry: entity === 'comments' ? (latestCommentEntry ?? latestExpenseEntry) : latestExpenseEntry, baseScope: baseExpenseScope })
     : { strategy: 'full' as const, scope: baseExpenseScope };
   const refreshScope = refreshPlan.scope;
   if (refreshMode) {
@@ -349,6 +365,7 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
 
   const context = { profileName, credentialName, currentUser, logger };
   const entries: CacheManifestEntry[] = [];
+  let exportedExpenses: ExpensesCachePayload | undefined;
 
   if (entity === 'friends' || entity === 'all') {
     const payload = await exportFriends(sw, progress);
@@ -393,20 +410,12 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
   }
   if (entity === 'expenses' || entity === 'all') {
     const payload = await exportExpensesWithProgress(sw, refreshScope, progress);
+    exportedExpenses = payload;
     entries.push(await persistExport(target, {
       writeBatchId: stagedBatchId,
       finalBatchId: batchId,
       entity: 'expenses',
       payload,
-      scope: refreshScope,
-      exportedAt,
-    }, context));
-    const commentPayload = await exportComments(sw, payload.items, progress);
-    entries.push(await persistExport(target, {
-      writeBatchId: stagedBatchId,
-      finalBatchId: batchId,
-      entity: 'comments',
-      payload: commentPayload,
       scope: refreshScope,
       exportedAt,
     }, context));
@@ -421,6 +430,19 @@ async function performExport(cmd: Command, entity: CacheEntity, options: CacheEn
         exportedAt,
       }, context));
     }
+  }
+  if (entity === 'comments' || entity === 'all') {
+    const commentExport = exportedExpenses
+      ? { expenses: exportedExpenses, comments: await exportComments(sw, exportedExpenses.items, progress) }
+      : await exportCommentsForScope(sw, refreshScope, progress);
+    entries.push(await persistExport(target, {
+      writeBatchId: stagedBatchId,
+      finalBatchId: batchId,
+      entity: 'comments',
+      payload: commentExport.comments,
+      scope: refreshScope,
+      exportedAt,
+    }, context));
   }
 
   let finalized = false;
@@ -610,9 +632,9 @@ export function registerCache(program: Command): void {
     .description('Add server data into the local cache')
     .action(async function (this: Command, entity: string, options: CacheEntityOption) {
       const normalized = entity as CacheEntity;
-      if (!['expenses', 'friends', 'groups', 'lookup', 'all'].includes(normalized)) {
+      if (!CACHE_EXPORTABLE_ENTITIES.includes(normalized as (typeof CACHE_EXPORTABLE_ENTITIES)[number])) {
         const logger = createLogger(this, 'cache');
-        logger.error(`Unknown cache entity "${entity}". Use expenses, friends, groups, lookup, or all.`);
+        logger.error(`Unknown cache entity "${entity}". Use ${CACHE_EXPORTABLE_ENTITIES.join(', ')}.`);
         process.exit(1);
       }
       await performExport(this, normalized, options, false);
@@ -622,9 +644,9 @@ export function registerCache(program: Command): void {
     .description('Refresh cache data using the latest compatible scope')
     .action(async function (this: Command, entity: string, options: CacheEntityOption) {
       const normalized = entity as CacheEntity;
-      if (!['expenses', 'friends', 'groups', 'lookup', 'all'].includes(normalized)) {
+      if (!CACHE_EXPORTABLE_ENTITIES.includes(normalized as (typeof CACHE_EXPORTABLE_ENTITIES)[number])) {
         const logger = createLogger(this, 'cache');
-        logger.error(`Unknown cache entity "${entity}". Use expenses, friends, groups, lookup, or all.`);
+        logger.error(`Unknown cache entity "${entity}". Use ${CACHE_EXPORTABLE_ENTITIES.join(', ')}.`);
         process.exit(1);
       }
       await performExport(this, normalized, options, true);
