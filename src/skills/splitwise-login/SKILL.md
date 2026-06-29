@@ -2,7 +2,7 @@
 name: splitwise-login
 description: Manage splitwise-cli login credentials and troubleshoot access issues.
 metadata:
-  version: "1.2.0"
+  version: "1.2.1"
   author: splitwise-cli
   tags: splitwise,login,oauth,token,credentials
   alwaysApply: "false"

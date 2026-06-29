@@ -2,7 +2,7 @@
 name: splitwise-expenses
 description: Query, create, delete, and import Splitwise expenses with filters, pagination, and formats.
 metadata:
-  version: "1.2.0"
+  version: "1.2.1"
   author: splitwise-cli
   tags: splitwise,expenses,filters,pagination,write,import
   alwaysApply: "false"
