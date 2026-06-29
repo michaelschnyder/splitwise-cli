@@ -2,7 +2,7 @@
 name: splitwise-friends
 description: List Splitwise friends and balances.
 metadata:
-  version: "1.2.1"
+  version: "1.2.2"
   author: splitwise-cli
   tags: splitwise,friends,balances
   alwaysApply: "false"

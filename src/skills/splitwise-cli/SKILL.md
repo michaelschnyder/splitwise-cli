@@ -2,7 +2,7 @@
 name: splitwise-cli
 description: Splitwise CLI command reference for login, profiles, cache, friends, groups, expenses, and skills.
 metadata:
-  version: "1.2.1"
+  version: "1.2.2"
   author: splitwise-cli
   tags: splitwise,cli,cache,expenses,groups,friends,login,profiles,write,import
   alwaysApply: "false"

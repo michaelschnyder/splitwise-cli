@@ -2,7 +2,7 @@
 name: splitwise-groups
 description: Work with Splitwise groups from splitwise-cli.
 metadata:
-  version: "1.2.1"
+  version: "1.2.2"
   author: splitwise-cli
   tags: splitwise,groups,members
   alwaysApply: "false"
