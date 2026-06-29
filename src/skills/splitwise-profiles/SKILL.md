@@ -2,7 +2,7 @@
 name: splitwise-profiles
 description: Manage splitwise-cli profiles, restrictions, and lock behavior.
 metadata:
-  version: "1.2.3"
+  version: "1.2.4"
   author: splitwise-cli
   tags: splitwise,profiles,restrictions,lock
   alwaysApply: "false"
