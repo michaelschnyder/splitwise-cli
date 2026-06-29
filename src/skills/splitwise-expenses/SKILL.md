@@ -89,6 +89,24 @@ splitwise-cli expenses add -d "Coffee" -a 4.50 --friend Alice --user-share 123:2
 
 When no `--user-share` flags are provided, the expense is split equally between the payer and the specified group or friend.
 
+### Output
+
+The `add` command returns the created expense with all fields including the **expense ID**, description, cost, currency, date, category, group, and payment status.
+
+~~~bash
+$ splitwise-cli expenses add -d "Lunch" -a 25.50 --friend Alice
+id          123456789
+description Lunch
+cost        25.50
+currency    USD
+date        2026-06-29
+category    Dining
+group       
+payment     false
+~~~
+
+The **expense ID** (`id`) uniquely identifies the expense for later reference, updates, or deletion. Agents can capture this ID from the output to track created expenses.
+
 ## Delete an Expense
 
 ~~~bash
@@ -146,6 +164,7 @@ JSON format follows the same structure.
 | `--dry-run` | Preview changes without writing anything |
 | `--matcher <type>` | Duplicate detection: `exact` (default) or `intelligent` |
 | `--on-duplicate <action>` | Action when duplicate found: `skip` (default) or `update` |
+| `--limit <number>` | Process only the first N records from the file |
 | `--no-cache` | Disable cache update after import |
 | `-o, --output <format>` | Output format |
 
@@ -164,14 +183,46 @@ Keyboard adjacency includes both the top-row digit keys (horizontal neighbours) 
 
 ### Import Summary Output
 
-After processing, a summary is printed to stderr:
+After processing, a summary is printed to stderr along with details for each imported expense:
 
-~~~text
+~~~bash
+$ splitwise-cli expenses import expenses.yaml
+i [expenses import] Parsing import file...
+✔ [expenses import] Parsed 3 record(s)
+i [expenses import] Fetching reference data...
+✔ [expenses import] Reference data loaded
+i [expenses import] Fetching existing expenses...
+✔ [expenses import] Loaded 2 existing expense(s)
+i [expenses import] Processing records...
+✔ [expenses import] Done
+
 i [expenses import] Import Summary:
 i [expenses import]   Created: 2
 i [expenses import]   Updated: 0
 i [expenses import]   Skipped: 1
 i [expenses import]   Errors:  0
+~~~
+
+Each created expense shows:
+
+| Field | Example |
+|-------|---------|
+| **id** | 123456789 |
+| **description** | Dinner |
+| **cost** | 30.00 |
+| **currency** | USD |
+| **date** | 2026-06-29 |
+| **category** | Dining |
+| **group** | Flatmates |
+| **payment** | false |
+
+The **expense ID** (`id`) uniquely identifies each created or updated expense. The import command tracks these IDs internally, allowing agents to reference created/updated expenses by their Splitwise ID.
+
+When using `--limit <number>`, the import processes only the first N records from the file:
+
+~~~bash
+splitwise-cli expenses import large-file.yaml --limit 5 --dry-run
+# Processes only first 5 records
 ~~~
 
 ## Supported Filters

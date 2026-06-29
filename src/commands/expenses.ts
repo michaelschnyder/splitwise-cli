@@ -1022,8 +1022,8 @@ export function registerExpenses(program: Command): void {
     .option('--dry-run', 'Preview changes without writing')
     .option('--matcher <type>', 'Duplicate matching strategy: exact|intelligent', 'exact')
     .option('--on-duplicate <action>', 'Action on duplicate: skip|update', 'skip')
+    .option('--limit <number>', 'Limit to first N records')
     .option('--no-cache', 'Do not cache results')
-    .option('--group <id>', 'Filter expenses by group id')
     .option('-o, --output <format>', 'Output format')
     .action(async function (this: Command, file: string, opts: any) {
       const logger = createLogger(this, 'expenses import');
@@ -1039,6 +1039,16 @@ export function registerExpenses(program: Command): void {
       try {
         progress.start('Parsing import file...');
         records = parseImportFile(file);
+        
+        // Apply limit if specified
+        if (opts.limit !== undefined) {
+          const limitNum = Number(opts.limit);
+          if (!Number.isInteger(limitNum) || limitNum <= 0) {
+            throw new Error(`Invalid --limit value "${opts.limit}". Must be a positive integer.`);
+          }
+          records = records.slice(0, limitNum);
+        }
+        
         progress.stop(`Parsed ${records.length} record(s)`, 'success');
       } catch (err) {
         progress.fail(err instanceof Error ? err.message : String(err));

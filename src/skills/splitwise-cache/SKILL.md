@@ -70,7 +70,8 @@ Offline behavior:
 ## Notes
 
 - `lookup` is stored as separate `categories` and `currencies` entities
-- expense exports also persist comments and a lightweight groups snapshot for offline name resolution
+- `comments` can be exported and refreshed independently from `expenses`
+- expense exports still persist a lightweight groups snapshot for offline name resolution
 - `cache add` and `cache refresh` create immutable cache directories
 
 ## Command Discovery

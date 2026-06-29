@@ -401,6 +401,7 @@ Use the `cache` command group to export immutable local snapshots and query data
 
 ```bash
 splitwise-cli cache add expenses --from -30d
+splitwise-cli cache add comments --from -30d
 splitwise-cli cache add lookup
 splitwise-cli cache add lookup --target user
 splitwise-cli cache refresh expenses
@@ -439,7 +440,8 @@ Offline behavior:
 ### Notes
 
 - `lookup` is stored as separate `categories` and `currencies` entities
-- expense exports also persist comments and a lightweight groups snapshot for offline name resolution
+- `comments` can be exported and refreshed independently from `expenses`
+- expense exports still persist a lightweight groups snapshot for offline name resolution
 
 ## Skills
 
