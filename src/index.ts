@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
+import { createRequire } from 'node:module';
 import figlet from 'figlet';
 import { registerLogin } from './commands/login.js';
 import { registerFriends } from './commands/friends.js';
@@ -12,12 +13,15 @@ import { registerCache } from './commands/cache.js';
 import { loadConfig, maskCredentialToken, resolveCredentialName, resolveProfile, setConfigDirOverride, validateSelectedProfileOrExit } from './lib/config.js';
 import { addCredentialOption, addLoggingOptions, addOfflineOption, addProfileOption, createLogger } from './lib/output.js';
 
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json') as { version?: string };
+
 const program = new Command();
 
 program
   .name('splitwise-cli')
   .description(figlet.textSync('Splitwise CLI', { horizontalLayout: 'full' }))
-  .version('1.0.0');
+  .version(packageJson.version ?? '0.0.0');
 
 addLoggingOptions(program);
 addProfileOption(program);
