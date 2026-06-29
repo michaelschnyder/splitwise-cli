@@ -8,6 +8,7 @@ export type ImportExpenseRecord = Record<string, unknown>;
 export type ImportContext = {
   groups: Array<{ id: number; name: string }>;
   friends: Array<{ id: number; firstName?: string; lastName?: string }>;
+  categories?: Array<{ id: number; name?: string }>;
   meId: number;
   lookupMap: Map<string, number | undefined>;
 };
@@ -100,7 +101,10 @@ export function normalizeToCreateParams(
   if (record.currencyCode !== undefined) params.currencyCode = String(record.currencyCode);
   if (record.notes !== undefined) params.details = String(record.notes);
   if (record.details !== undefined) params.details = String(record.details);
-  const categoryId = resolveNumericId(record.categoryId ?? record.category_id ?? record.category);
+  const categoryId = resolveCategoryId(
+    record.categoryId ?? record.category_id ?? record.category,
+    context,
+  );
   if (categoryId !== undefined) params.categoryId = categoryId;
   if (record.payment !== undefined) params.payment = Boolean(record.payment);
 
@@ -144,7 +148,7 @@ function resolveNumericId(value: unknown): number | undefined {
 
 function resolveLookupId(
   value: unknown,
-  prefix: 'group' | 'friend',
+  prefix: 'group' | 'friend' | 'category',
   lookupMap: Map<string, number | undefined>,
 ): number | undefined {
   const asId = resolveNumericId(value);
@@ -153,6 +157,25 @@ function resolveLookupId(
   if (value === undefined || value === null) return undefined;
   const key = `${prefix}:${String(value).trim().toLowerCase()}`;
   return lookupMap.get(key);
+}
+
+function resolveCategoryId(value: unknown, context: ImportContext): number | undefined {
+  const numeric = resolveNumericId(value);
+  if (numeric !== undefined) return numeric;
+
+  if (value === undefined || value === null) return undefined;
+  const raw = String(value).trim();
+  if (!raw) return undefined;
+
+  const exact = context.lookupMap.get(`category:${raw.toLowerCase()}`);
+  if (exact !== undefined) return exact;
+
+  const needle = raw.toLowerCase();
+  const matches = (context.categories ?? []).filter((category) =>
+    String(category.name ?? '').toLowerCase().includes(needle),
+  );
+  if (matches.length === 1) return matches[0].id;
+  return undefined;
 }
 
 function buildLookupMap(context: ImportContext): void {
@@ -168,6 +191,12 @@ function buildLookupMap(context: ImportContext): void {
     if (friend.firstName) {
       context.lookupMap.set(`friend:${friend.firstName.toLowerCase()}`, friend.id);
     }
+  }
+
+  for (const category of context.categories ?? []) {
+    const name = String(category.name ?? '').trim().toLowerCase();
+    if (!name) continue;
+    context.lookupMap.set(`category:${name}`, category.id);
   }
 
   context.lookupMap.set('user:@me', context.meId);
@@ -196,19 +225,17 @@ export function exactMatch(
   if (candidate.cost !== existing.cost) return false;
   if ((candidate.currencyCode ?? 'USD') !== (existing.currencyCode ?? 'USD')) return false;
 
-  // Exact match on date
-  if (candidate.date && existing.date && candidate.date !== existing.date) return false;
+  // Exact match on date (normalize timestamped values to YYYY-MM-DD)
+  if (candidate.date && existing.date) {
+    const candidateDay = toDateOnly(candidate.date);
+    const existingDay = toDateOnly(existing.date);
+    if (candidateDay && existingDay && candidateDay !== existingDay) return false;
+  }
 
   // Exact match on distribution (if both specify users and existing has actual users)
   if (candidate.users && existing.users && existing.users.length > 0) {
-    const candidateSorted = [...candidate.users]
-      .sort((a, b) => a.userId - b.userId)
-      .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
-      .join('|');
-    const existingSorted = [...(existing.users ?? [])]
-      .sort((a, b) => a.userId - b.userId)
-      .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
-      .join('|');
+    const candidateSorted = canonicalizeUsers(candidate.users);
+    const existingSorted = canonicalizeUsers(existing.users as any);
     if (candidateSorted !== existingSorted) return false;
   }
 
@@ -250,14 +277,23 @@ function isDigitAdjacentTypo(actual: string, expected: string): boolean {
   return differenceCount === 1;
 }
 
+function toDateOnly(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match?.[1];
+}
+
 function dateFuzzyMatch(candidateDate: string | undefined, existingDate: string | undefined): boolean {
-  if (!candidateDate || !existingDate) return true;
+  const candidateDay = toDateOnly(candidateDate);
+  const existingDay = toDateOnly(existingDate);
+  if (!candidateDay || !existingDay) return true;
 
   // Exact match
-  if (candidateDate === existingDate) return true;
+  if (candidateDay === existingDay) return true;
 
-  const candDate = new Date(`${candidateDate}T00:00:00Z`);
-  const exDate = new Date(`${existingDate}T00:00:00Z`);
+  const candDate = new Date(`${candidateDay}T00:00:00Z`);
+  const exDate = new Date(`${existingDay}T00:00:00Z`);
   if (Number.isNaN(candDate.getTime()) || Number.isNaN(exDate.getTime())) return false;
 
   // Within ±5 days
@@ -265,8 +301,8 @@ function dateFuzzyMatch(candidateDate: string | undefined, existingDate: string 
   if (dayDiff <= 5) return true;
 
   // Check for digit-adjacent typos on date components
-  const candParts = candidateDate.split('-'); // YYYY-MM-DD
-  const exParts = existingDate.split('-');
+  const candParts = candidateDay.split('-'); // YYYY-MM-DD
+  const exParts = existingDay.split('-');
   if (candParts.length !== 3 || exParts.length !== 3) return false;
 
   for (let i = 0; i < 3; i++) {
@@ -290,6 +326,29 @@ function currencyFuzzyMatch(candidateCurrency: string, existingCurrency: string)
   if (candidateCurrency === existingCurrency) return true;
   // Only exact match for currency; no fuzzy
   return false;
+}
+
+function normalizeShare(value: string | number | undefined): string {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return '0.00';
+  if (Object.is(parsed, -0)) return '0.00';
+  return parsed.toFixed(2);
+}
+
+function canonicalizeUsers(
+  users: Array<{ userId: number; paidShare?: string | number; owedShare?: string | number }> | undefined,
+): string {
+  if (!users || users.length === 0) return '';
+  return users
+    .map((u) => ({
+      userId: Number(u.userId),
+      paid: normalizeShare(u.paidShare),
+      owed: normalizeShare(u.owedShare),
+    }))
+    .filter((u) => Number.isFinite(u.userId) && !(u.paid === '0.00' && u.owed === '0.00'))
+    .sort((a, b) => a.userId - b.userId)
+    .map((u) => `${u.userId}:${u.paid}:${u.owed}`)
+    .join('|');
 }
 
 export function intelligentMatch(
@@ -320,14 +379,8 @@ export function intelligentMatch(
 
   // Distribution must match exactly (if both specify users and existing has actual users)
   if (candidate.users && existing.users && existing.users.length > 0) {
-    const candidateSorted = [...candidate.users]
-      .sort((a, b) => a.userId - b.userId)
-      .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
-      .join('|');
-    const existingSorted = [...(existing.users ?? [])]
-      .sort((a, b) => a.userId - b.userId)
-      .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
-      .join('|');
+    const candidateSorted = canonicalizeUsers(candidate.users);
+    const existingSorted = canonicalizeUsers(existing.users as any);
     if (candidateSorted !== existingSorted) return false;
   }
 
@@ -343,14 +396,15 @@ function scopeMatch(
   if (matchScope === 'account') return true;
 
   if (candidate.groupId !== undefined) {
-    return existing.groupId === candidate.groupId;
+    const existingGroupId = Number((existing as any).groupId);
+    return Number.isFinite(existingGroupId) && existingGroupId === candidate.groupId;
   }
 
   if (candidate.friendId !== undefined) {
     // Friend expenses are expected to be non-group expenses.
     if (existing.groupId !== null && existing.groupId !== undefined) return false;
 
-    const existingFriendId = Number((existing as any).friendId);
+    const existingFriendId = Number((existing as any).friendId ?? (existing as any).friend_id);
     if (!Number.isNaN(existingFriendId)) {
       return existingFriendId === candidate.friendId;
     }
@@ -406,14 +460,8 @@ export function buildExpenseUpdateParams(
     hasChanges = true;
   }
   if (candidate.users !== undefined) {
-    const candidateSorted = [...candidate.users]
-      .sort((a, b) => a.userId - b.userId)
-      .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
-      .join('|');
-    const existingSorted = [...(existing.users ?? [])]
-      .sort((a, b) => a.userId - b.userId)
-      .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
-      .join('|');
+    const candidateSorted = canonicalizeUsers(candidate.users);
+    const existingSorted = canonicalizeUsers(existing.users as any);
     if (candidateSorted !== existingSorted) {
       updates.users = candidate.users;
       hasChanges = true;

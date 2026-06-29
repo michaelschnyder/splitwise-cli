@@ -478,4 +478,58 @@ describe('expenses import --on-duplicate=update E2E', () => {
       await teardownE2EEnv(ctx);
     }
   });
+
+  it('uses id_hint when present and loaded, even when matcher fields differ', async () => {
+    const ctx = await setupE2EEnv();
+    try {
+      const addResult = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'add',
+        '-d', 'Hinted expense original',
+        '-a', '12.00',
+        '--date', '2024-01-15',
+        '-C', 'USD',
+        '--group', 'January Trip',
+      ], ctx.tempDir, ctx.env);
+
+      const idMatch = addResult.stdout.match(/^id\s+(\d+)/m);
+      assert.ok(idMatch, 'Could not find seeded expense ID in add output');
+      const expenseId = Number(idMatch[1]);
+
+      const updateImportFile = join(ctx.tempDir, 'update-by-hint.json');
+      writeFileSync(updateImportFile, JSON.stringify([
+        {
+          id_hint: expenseId,
+          description: 'Hinted expense updated',
+          cost: '99.99',
+          date: '2024-01-15',
+          currency: 'USD',
+          group: 'January Trip',
+        },
+      ]));
+
+      const updateResult = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', updateImportFile,
+        '--on-duplicate', 'update',
+      ], ctx.tempDir, ctx.env);
+
+      assert.match(updateResult.stdout, /updated\s+1/i);
+
+      const getResult = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'get', String(expenseId), '-o', 'json',
+      ], ctx.tempDir, ctx.env);
+      const updatedRows = JSON.parse(getResult.stdout);
+      const updated = Array.isArray(updatedRows) ? updatedRows[0] : updatedRows;
+      assert.equal(updated.description, 'Hinted expense updated');
+      assert.equal(updated.cost, '99.99');
+      assert.equal(updated.date, '2024-01-15');
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
 });

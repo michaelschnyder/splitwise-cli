@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import prompts from 'prompts';
 import { dump as yamlDump } from 'js-yaml';
 import { type Expense, type ExpenseCreateParams } from 'splitwise';
+import { appendFileSync } from 'node:fs';
 import {
   getDataClient,
   ensureCreateExpenseAllowed,
@@ -1021,6 +1022,7 @@ export function registerExpenses(program: Command): void {
     .command('import <file>')
     .description('Import expenses from a YAML or JSON file')
     .option('--dry-run', 'Preview changes without writing')
+    .option('--log-import [file]', 'Append per-row import events as JSONL (defaults to <import-file>.jsonl)')
     .option('--matcher <type>', 'Duplicate matching strategy: exact|intelligent', 'exact')
     .option('--match-scope <scope>', 'Duplicate match scope: target|account', 'target')
     .option('--on-duplicate <action>', 'Action on duplicate: skip|update', 'skip')
@@ -1061,6 +1063,44 @@ export function registerExpenses(program: Command): void {
         `Import options => dryRun=${opts.dryRun === true}, limit=${opts.limit ?? 'none'}, noCache=${opts.cache === false}`,
       );
 
+      const logImportPath = (() => {
+        const rawValue = opts.logImport;
+        if (rawValue === undefined || rawValue === false) return undefined;
+        if (typeof rawValue === 'string' && rawValue.trim().length > 0) return rawValue.trim();
+        return `${file}.jsonl`;
+      })();
+
+      if (logImportPath) {
+        try {
+          // Ensure path is writable early and keep append-only semantics.
+          appendFileSync(logImportPath, '');
+          logger.debug(`Import logging enabled at ${logImportPath}`);
+        } catch (err) {
+          logger.error(`Unable to open import log file "${logImportPath}" for append.`);
+          logger.error((err as Error).message);
+          process.exit(1);
+        }
+      }
+
+      const appendImportLog = (entry: Record<string, unknown>) => {
+        if (!logImportPath) return;
+        const { action, description, ...rest } = entry;
+        const row = {
+          ts: new Date().toISOString(),
+          sourceFile: file,
+          action,
+          description,
+          ...rest,
+        };
+        try {
+          appendFileSync(logImportPath, `${JSON.stringify(row)}\n`);
+        } catch (err) {
+          logger.error(`Failed to append import log entry to "${logImportPath}".`);
+          logger.error((err as Error).message);
+          process.exit(1);
+        }
+      };
+
       // Parse import file
       let records: ImportExpenseRecord[];
       try {
@@ -1090,13 +1130,15 @@ export function registerExpenses(program: Command): void {
       let allExpenses: Expense[] = [];
       let friends: any[] = [];
       let groups: any[] = [];
+      let categories: any[] = [];
 
       try {
         progress.start('Fetching reference data...');
-        [currentUser, friends, groups] = await Promise.all([
+        [currentUser, friends, groups, categories] = await Promise.all([
           sw.users.getCurrent(),
           sw.friends.list({}),
           sw.groups.list({}),
+          sw.categories.list(),
         ]);
         progress.stop('Reference data loaded', 'success');
       } catch (err) {
@@ -1106,22 +1148,41 @@ export function registerExpenses(program: Command): void {
       }
 
       // Build import context
+      const flattenedCategories = categories.flatMap((category: any) => {
+        const base = [{ id: category.id, name: category.name }];
+        const subs = Array.isArray(category.subcategories)
+          ? category.subcategories.flatMap((sub: any) => {
+              const rows: Array<{ id: number; name: string }> = [];
+              if (typeof sub?.name === 'string' && sub.name.trim().length > 0) {
+                rows.push({ id: sub.id, name: sub.name });
+                if (typeof category?.name === 'string' && category.name.trim().length > 0) {
+                  rows.push({ id: sub.id, name: `${category.name} - ${sub.name}` });
+                }
+              }
+              return rows;
+            })
+          : [];
+        return [...base, ...subs];
+      });
+
       const context: ImportContext = {
         groups: groups.map((g: any) => ({ id: g.id, name: g.name })),
         friends: friends.map((f: any) => ({ id: f.id, firstName: f.firstName, lastName: f.lastName })),
+        categories: flattenedCategories,
         meId: currentUser.id,
         lookupMap: new Map(),
       };
 
       const matchesImportScope = (params: ExpenseCreateParams, existing: Expense): boolean => {
         if (params.groupId !== undefined) {
-          return existing.groupId === params.groupId;
+          const existingGroupId = Number((existing as any).groupId ?? (existing as any).group_id);
+          return Number.isFinite(existingGroupId) && existingGroupId === params.groupId;
         }
 
         if (params.friendId !== undefined) {
           if (existing.groupId !== null && existing.groupId !== undefined) return false;
 
-          const existingFriendId = Number((existing as any).friendId);
+          const existingFriendId = Number((existing as any).friendId ?? (existing as any).friend_id);
           if (!Number.isNaN(existingFriendId)) {
             return existingFriendId === params.friendId;
           }
@@ -1145,14 +1206,27 @@ export function registerExpenses(program: Command): void {
       try {
         progress.start('Fetching existing expenses...');
 
+        const shiftIsoDate = (isoDate: string, days: number): string => {
+          const base = new Date(`${isoDate}T00:00:00Z`);
+          if (Number.isNaN(base.getTime())) return isoDate;
+          base.setUTCDate(base.getUTCDate() + days);
+          return base.toISOString().slice(0, 10);
+        };
+
         const dates = records
-          .map((r) => String(r.date ?? '').trim())
+          .map((r) => String(r.date ?? '').trim().slice(0, 10))
           .filter(Boolean)
           .sort();
-        const datedAfter = dates[0] ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-          .toISOString()
-          .slice(0, 10);
-        const datedBefore = dates[dates.length - 1] ?? new Date().toISOString().slice(0, 10);
+        const datedAfter = dates[0]
+          ? shiftIsoDate(dates[0], -1)
+          : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const datedBefore = dates[dates.length - 1]
+          ? shiftIsoDate(dates[dates.length - 1], 1)
+          : new Date().toISOString().slice(0, 10);
+
+        const fetchParams: Record<string, unknown> = sw.getSourceKind() === 'cache'
+          ? { from: datedAfter, to: datedBefore }
+          : { datedAfter, datedBefore };
 
         const groupTargets = new Set(preparedRecords
           .map(({ params }) => params?.groupId)
@@ -1160,10 +1234,6 @@ export function registerExpenses(program: Command): void {
         const friendTargets = new Set(preparedRecords
           .map(({ params }) => params?.friendId)
           .filter((id): id is number => id !== undefined));
-
-        const fetchParams: Record<string, unknown> = sw.getSourceKind() === 'cache'
-          ? { from: datedAfter, to: datedBefore }
-          : { datedAfter, datedBefore };
 
         if (matchScope === 'target' && groupTargets.size === 1 && friendTargets.size === 0) {
           fetchParams.groupId = [...groupTargets][0];
@@ -1209,11 +1279,54 @@ export function registerExpenses(program: Command): void {
       for (let index = 0; index < preparedRecords.length; index++) {
         const { record, params } = preparedRecords[index];
         const label = String(record.description ?? `record#${index + 1}`);
+        const rawIdHint = (record as any).id_hint ?? (record as any).idHint;
+        const idHint = rawIdHint === undefined || rawIdHint === null
+          ? undefined
+          : Number(String(rawIdHint).trim());
+        const validIdHint = Number.isInteger(idHint) && Number(idHint) > 0 ? Number(idHint) : undefined;
+        const logDate = String(record.date ?? '').trim() || undefined;
+        const logAmount = String(record.cost ?? '').trim() || undefined;
+        const logCurrency = String((record as any).currency ?? (record as any).currencyCode ?? '').trim().toUpperCase() || undefined;
+        const logNotes = String((record as any).notes ?? (record as any).details ?? '').trim() || undefined;
+        const baseLogPayload = {
+          row: index + 1,
+          description: label,
+          date: logDate,
+          amount: logAmount,
+          currency: logCurrency,
+          notes: logNotes,
+          idHint: validIdHint,
+        };
+        const rawCategory = record.categoryId ?? (record as any).category_id ?? record.category;
 
         if (!params) {
           logger.debug(`[${index + 1}/${preparedRecords.length}] ${label}: invalid input (missing description/cost)`);
           const reason = 'Missing required fields (description, cost)';
           errorCount++;
+          appendImportLog({
+            ...baseLogPayload,
+            action: 'error',
+            reason,
+          });
+          emitImportItem({
+            index: index + 1,
+            description: label,
+            status: 'error',
+            reason,
+          });
+          continue;
+        }
+
+        if (rawCategory !== undefined && rawCategory !== null && String(rawCategory).trim().length > 0 && params.categoryId === undefined) {
+          const reason = `Unknown or ambiguous category "${String(rawCategory)}"`;
+          logger.debug(`[${index + 1}/${preparedRecords.length}] ${label}: invalid category - ${reason}`);
+          errorCount++;
+          appendImportLog({
+            ...baseLogPayload,
+            action: 'error',
+            reason,
+            category: String(rawCategory),
+          });
           emitImportItem({
             index: index + 1,
             description: label,
@@ -1226,8 +1339,23 @@ export function registerExpenses(program: Command): void {
         logger.debug(
           `[${index + 1}/${preparedRecords.length}] ${label}: evaluating duplicate using ${matcherName}/${matchScope}`,
         );
+        logger.debug(
+          `[${index + 1}/${preparedRecords.length}] ${label}: resolved target groupId=${params.groupId ?? 'none'} friendId=${params.friendId ?? 'none'} categoryId=${params.categoryId ?? 'none'}`,
+        );
 
-        const duplicate = allExpenses.find((e) => matcher(params, e, context.meId, matchScope));
+        const duplicateByHint = validIdHint === undefined
+          ? undefined
+          : allExpenses.find((e) => Number(e.id) === validIdHint);
+
+        if (validIdHint !== undefined) {
+          logger.debug(
+            duplicateByHint
+              ? `[${index + 1}/${preparedRecords.length}] ${label}: id_hint=${validIdHint} matched loaded expense #${duplicateByHint.id}`
+              : `[${index + 1}/${preparedRecords.length}] ${label}: id_hint=${validIdHint} not found in loaded expenses; falling back to ${matcherName}/${matchScope}`,
+          );
+        }
+
+        const duplicate = duplicateByHint ?? allExpenses.find((e) => matcher(params, e, context.meId, matchScope));
 
         if (duplicate) {
           logger.debug(
@@ -1240,6 +1368,12 @@ export function registerExpenses(program: Command): void {
               try {
                 const updatedExpense = await sw.expenses.update(updateParams);
                 updatedCount++;
+                appendImportLog({
+                  ...baseLogPayload,
+                  action: 'updated',
+                  expenseId: Number(updatedExpense.id),
+                  duplicateId: Number(duplicate.id),
+                });
                 emitImportItem({
                   index: index + 1,
                   description: label,
@@ -1258,6 +1392,12 @@ export function registerExpenses(program: Command): void {
                   `[${index + 1}/${preparedRecords.length}] ${label}: update failed - ${(err as Error).message}`,
                 );
                 errorCount++;
+                appendImportLog({
+                  ...baseLogPayload,
+                  action: 'error',
+                  reason: (err as Error).message,
+                  duplicateId: Number(duplicate.id),
+                });
                 emitImportItem({
                   index: index + 1,
                   description: label,
@@ -1272,6 +1412,12 @@ export function registerExpenses(program: Command): void {
                 `[${index + 1}/${preparedRecords.length}] ${label}: duplicate unchanged - skipping update`,
               );
               skippedCount++;
+              appendImportLog({
+                ...baseLogPayload,
+                action: 'skipped',
+                reason: 'no_changes',
+                duplicateId: Number(duplicate.id),
+              });
               emitImportItem({
                 index: index + 1,
                 description: label,
@@ -1284,6 +1430,12 @@ export function registerExpenses(program: Command): void {
               `[${index + 1}/${preparedRecords.length}] ${label}: duplicate action ${onDuplicate}${opts.dryRun ? ' (dry-run)' : ''} => skip`,
             );
             skippedCount++;
+            appendImportLog({
+              ...baseLogPayload,
+              action: 'skipped',
+              reason: `duplicate_${onDuplicate}${opts.dryRun ? '_dry_run' : ''}`,
+              duplicateId: Number(duplicate.id),
+            });
             emitImportItem({
               index: index + 1,
               description: label,
@@ -1296,6 +1448,11 @@ export function registerExpenses(program: Command): void {
             try {
               const created_expense = await sw.expenses.create(params);
               createdCount++;
+              appendImportLog({
+                ...baseLogPayload,
+                action: 'created',
+                expenseId: Number(created_expense.id),
+              });
               emitImportItem({
                 index: index + 1,
                 description: label,
@@ -1311,6 +1468,11 @@ export function registerExpenses(program: Command): void {
                 `[${index + 1}/${preparedRecords.length}] ${label}: create failed - ${(err as Error).message}`,
               );
               errorCount++;
+              appendImportLog({
+                ...baseLogPayload,
+                action: 'error',
+                reason: (err as Error).message,
+              });
               emitImportItem({
                 index: index + 1,
                 description: label,
@@ -1323,6 +1485,10 @@ export function registerExpenses(program: Command): void {
               `[${index + 1}/${preparedRecords.length}] ${label}: would create (dry-run)`,
             );
             createdCount++;
+            appendImportLog({
+              ...baseLogPayload,
+              action: 'dry-run-create',
+            });
             emitImportItem({
               index: index + 1,
               description: label,

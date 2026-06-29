@@ -230,6 +230,7 @@ Date values support ISO (`2026-01-01`) and relative values (`-10d`, `-2w`, `-1mo
 | `--match-scope <scope>` | Duplicate scope: `target` (default) or `account` |
 | `--on-duplicate <action>` | Action on match: `skip` (default) or `update` |
 | `--limit <number>` | Process only the first N records |
+| `--log-import [file]` | Append per-row JSONL events; when omitted, defaults to `<import-file>.jsonl` |
 | `--no-cache` | Disable cache update after import |
 
 Import files are YAML or JSON lists. Two record shapes are supported:
@@ -272,6 +273,12 @@ Debug tracing:
 - Use `--log debug` (or higher) to print per-record matching decisions and create/update/skip outcomes.
 - Use `SW_DEBUG=true` to force trace-level logs.
 
+Import event logging:
+
+- Use `--log-import` to append JSONL row events for batch tracking.
+- Use `--log-import <file>` to choose an explicit log file.
+- If no file is passed, the default is the import filename with `.jsonl` appended (for example, `monthly.yaml.jsonl`).
+
 ### Example Commands
 
 ```bash
@@ -285,6 +292,8 @@ splitwise-cli expenses delete 99999 --yes
 splitwise-cli expenses import monthly.yaml --dry-run
 splitwise-cli expenses import monthly.yaml --matcher intelligent --on-duplicate update
 splitwise-cli expenses import monthly.yaml --match-scope account --matcher exact
+splitwise-cli expenses import monthly.yaml --log-import
+splitwise-cli expenses import monthly.yaml --log-import import-run.jsonl
 splitwise-cli expenses import monthly.yaml --log debug --matcher intelligent --match-scope target
 ```
 

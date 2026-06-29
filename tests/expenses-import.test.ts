@@ -1,7 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Expense } from 'splitwise';
@@ -293,6 +293,69 @@ describe('import normalization', () => {
     assert.equal(params.categoryId, 18);
   });
 
+  it('resolves category name via category lookup context', () => {
+    const context: ImportContext = {
+      groups: [],
+      friends: [],
+      categories: [
+        { id: 11, name: 'Liquor' },
+        { id: 12, name: 'Taxi' },
+      ],
+      meId: 999,
+      lookupMap: new Map(),
+    };
+    const record: ImportExpenseRecord = {
+      description: 'Airport ride',
+      cost: '39.07',
+      category: 'Taxi',
+    };
+    const params = normalizeToCreateParams(record, context);
+    assert.ok(params);
+    assert.equal(params.categoryId, 12);
+  });
+
+  it('resolves category by unique substring', () => {
+    const context: ImportContext = {
+      groups: [],
+      friends: [],
+      categories: [
+        { id: 21, name: 'Transportation - Taxi' },
+        { id: 22, name: 'Transportation - Other' },
+      ],
+      meId: 999,
+      lookupMap: new Map(),
+    };
+    const record: ImportExpenseRecord = {
+      description: 'Airport ride',
+      cost: '39.07',
+      category: 'Taxi',
+    };
+    const params = normalizeToCreateParams(record, context);
+    assert.ok(params);
+    assert.equal(params.categoryId, 21);
+  });
+
+  it('does not resolve category when substring is ambiguous', () => {
+    const context: ImportContext = {
+      groups: [],
+      friends: [],
+      categories: [
+        { id: 31, name: 'Food - Other' },
+        { id: 32, name: 'Transportation - Other' },
+      ],
+      meId: 999,
+      lookupMap: new Map(),
+    };
+    const record: ImportExpenseRecord = {
+      description: 'Something',
+      cost: '1.00',
+      category: 'Other',
+    };
+    const params = normalizeToCreateParams(record, context);
+    assert.ok(params);
+    assert.equal(params.categoryId, undefined);
+  });
+
   it('does not set categoryId for non-numeric category labels', () => {
     const context: ImportContext = {
       groups: [],
@@ -360,6 +423,19 @@ describe('exact matcher', () => {
       cost: '30.00',
       currencyCode: 'USD',
       date: '2024-01-15',
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(exactMatch(withDate, existing, meId));
+  });
+
+  it('matches when existing date includes timestamp for the same day', () => {
+    const withDate = { ...candidate, date: '2024-01-15' };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      date: '2024-01-15T16:00:00Z',
       createdBy: { id: meId },
     } as any;
     assert.ok(exactMatch(withDate, existing, meId));
@@ -448,6 +524,19 @@ describe('exact matcher', () => {
     assert.ok(exactMatch(withGroup, existing, meId, 'target'));
   });
 
+  it('matches expenses in the same group when existing group id is string-typed', () => {
+    const withGroup = { ...candidate, groupId: 100 };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      groupId: '100' as any,
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(exactMatch(withGroup, existing, meId, 'target'));
+  });
+
   it('can match across groups with account scope', () => {
     const withGroup = { ...candidate, groupId: 100 };
     const existing: Expense = {
@@ -501,6 +590,19 @@ describe('intelligent matcher', () => {
       cost: '30.00',
       currencyCode: 'USD',
       date: '2024-01-18',
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(intelligentMatch(withDate, existing, meId));
+  });
+
+  it('matches with date within ±5 days when existing date includes timestamp', () => {
+    const withDate = { ...candidate, date: '2024-01-15' };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      date: '2024-01-18T16:00:00Z',
       createdBy: { id: meId },
     } as any;
     assert.ok(intelligentMatch(withDate, existing, meId));
@@ -598,6 +700,45 @@ describe('intelligent matcher', () => {
     } as any;
     assert.ok(intelligentMatch(friendScoped, existing, meId, 'target'));
   });
+
+  it('matches friend-scoped candidate when existing friend id is string-typed', () => {
+    const friendScoped = { ...candidate, friendId: 201 };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      groupId: null,
+      friendId: '201' as any,
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(intelligentMatch(friendScoped, existing, meId, 'target'));
+  });
+
+  it('matches when existing omits zero/zero participant rows', () => {
+    const withUsers = {
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      users: [
+        { userId: 1, paidShare: '30', owedShare: '15' },
+        { userId: 2, paidShare: '0', owedShare: '15' },
+        { userId: 3, paidShare: '0', owedShare: '0' },
+      ],
+    };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      users: [
+        { userId: 1, paidShare: '30.00', owedShare: '15.00' },
+        { userId: 2, paidShare: '0.00', owedShare: '15.00' },
+      ],
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(intelligentMatch(withUsers, existing, meId));
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -647,6 +788,109 @@ async function teardownE2EEnv(ctx: {
 }
 
 describe('expenses import E2E', () => {
+  it('appends JSONL import events to explicit --log-import file', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+    const logFile = join(ctx.tempDir, 'import-events.jsonl');
+    const content = JSON.stringify([
+      {
+        description: 'Log file test expense',
+        cost: '11.00',
+        date: '2024-01-15',
+        currency: 'USD',
+        notes: 'Reconcile this row',
+      },
+    ]);
+    writeFileSync(importFile, content);
+
+    try {
+      const first = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--log-import', logFile,
+      ], ctx.tempDir, ctx.env);
+      assert.equal(first.status, 0);
+
+      const second = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--log-import', logFile,
+      ], ctx.tempDir, ctx.env);
+      assert.equal(second.status, 0);
+
+      const lines = readFileSync(logFile, 'utf8').split(/\r?\n/).filter((line) => line.trim().length > 0);
+      assert.equal(lines.length, 2);
+      assert.ok(lines[0].indexOf('"action"') < lines[0].indexOf('"description"'));
+
+      const firstEntry = JSON.parse(lines[0]);
+      const secondEntry = JSON.parse(lines[1]);
+      assert.equal(firstEntry.action, 'created');
+      assert.equal(secondEntry.action, 'skipped');
+      assert.equal(firstEntry.sourceFile, importFile);
+      assert.equal(secondEntry.sourceFile, importFile);
+      assert.equal(firstEntry.row, 1);
+      assert.equal(secondEntry.row, 1);
+      assert.equal(typeof firstEntry.expenseId, 'number');
+      assert.ok(Number.isInteger(firstEntry.expenseId));
+      assert.equal(typeof secondEntry.duplicateId, 'number');
+      assert.ok(Number.isInteger(secondEntry.duplicateId));
+      assert.equal(firstEntry.date, '2024-01-15');
+      assert.equal(firstEntry.amount, '11.00');
+      assert.equal(firstEntry.currency, 'USD');
+      assert.equal(firstEntry.notes, 'Reconcile this row');
+      assert.equal(secondEntry.date, '2024-01-15');
+      assert.equal(secondEntry.amount, '11.00');
+      assert.equal(secondEntry.currency, 'USD');
+      assert.equal(secondEntry.notes, 'Reconcile this row');
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('uses <import-file>.jsonl when --log-import is passed without a file', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses-default-log.json');
+    const defaultLogFile = `${importFile}.jsonl`;
+    const content = JSON.stringify([
+      {
+        description: 'Default log path expense',
+        cost: '13.00',
+        date: '2024-01-16',
+        currency: 'USD',
+        notes: 'Default file notes',
+      },
+    ]);
+    writeFileSync(importFile, content);
+
+    try {
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--log-import',
+      ], ctx.tempDir, ctx.env);
+      assert.equal(result.status, 0);
+      assert.equal(existsSync(defaultLogFile), true);
+
+      const lines = readFileSync(defaultLogFile, 'utf8').split(/\r?\n/).filter((line) => line.trim().length > 0);
+      assert.equal(lines.length, 1);
+      const entry = JSON.parse(lines[0]);
+      assert.equal(entry.action, 'created');
+      assert.equal(entry.sourceFile, importFile);
+      assert.equal(entry.row, 1);
+      assert.equal(typeof entry.expenseId, 'number');
+      assert.ok(Number.isInteger(entry.expenseId));
+      assert.equal(entry.date, '2024-01-16');
+      assert.equal(entry.amount, '13.00');
+      assert.equal(entry.currency, 'USD');
+      assert.equal(entry.notes, 'Default file notes');
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
   it('imports records and creates new expenses', async () => {
     const ctx = await setupE2EEnv();
     const importFile = join(ctx.tempDir, 'expenses.json');
@@ -1046,6 +1290,69 @@ describe('expenses import E2E', () => {
       assert.match(result.stdout, /"updated":\s*0/);
       assert.match(result.stdout, /"skipped":\s*0/);
       assert.match(result.stdout, /"errors":\s*0/);
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('reports unresolved category as error even in dry-run', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+    writeFileSync(importFile, JSON.stringify([
+      {
+        description: 'Bad category test',
+        cost: '9.90',
+        date: '2024-01-15',
+        currency: 'USD',
+        category: 'DefinitelyNotASplitwiseCategory',
+      },
+    ]));
+
+    try {
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--dry-run',
+      ], ctx.tempDir, ctx.env);
+
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, /Bad category test/);
+      assert.match(result.stdout, /error/i);
+      assert.match(result.stdout, /Unknown or ambiguous category/);
+      assert.match(result.stdout, /errors\s+1/i);
+      assert.match(result.stdout, /created\s+0/i);
+      assert.match(result.stderr, /Dry-run mode: no changes written/);
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('applies target prefilter when importing into one target group', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+    writeFileSync(importFile, JSON.stringify([
+      {
+        description: 'Target prefilter check',
+        cost: '12.00',
+        date: '2024-01-15',
+        currency: 'USD',
+        group: 'January Trip',
+      },
+    ]));
+
+    try {
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        '--log', 'debug',
+        'expenses', 'import', importFile,
+        '--dry-run',
+      ], ctx.tempDir, ctx.env);
+
+      assert.equal(result.status, 0);
+      assert.match(result.stderr, /request GET .*\/get_expenses/);
+      assert.match(result.stderr, /(group_id|groupId)=/);
     } finally {
       await teardownE2EEnv(ctx);
     }
