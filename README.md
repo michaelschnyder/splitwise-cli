@@ -260,7 +260,7 @@ Import files are YAML or JSON lists. Two record shapes are supported:
       owedShare: "15"
 ```
 
-Both shapes can be mixed in the same file. The `intelligent` matcher tolerates date differences of ±5 days, a single adjacent-key digit typo per date component or in the cost digits, with exact currency match required.
+Both shapes can be mixed in the same file. The `intelligent` matcher tolerates date differences of ±5 days, and for larger gaps allows at most one adjacent-key digit typo across the full `YYYYMMDD` date. Cost matching tolerates one adjacent-key digit typo and normalizes numeric formatting (for example `50.10` equals `50.1`). Currency must match exactly.
 
 Import matching behavior:
 

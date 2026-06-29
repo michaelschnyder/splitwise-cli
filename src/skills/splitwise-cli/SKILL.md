@@ -165,5 +165,6 @@ splitwise-cli skills --help
 - Write operations (`add`, `delete`, `import`) require profile permissions (`createExpenses`, `updateExpenses`, `deleteExpenses`).
 - `expenses import` supports both simplified (group/friend by name) and full (per-user splits) record shapes.
 - `expenses import --match-scope target|account` controls whether duplicate detection is target-scoped or account-wide.
+- `expenses import --log-import [file]` appends per-row JSONL events for reconciliation; if no file is provided, `<import-file>.jsonl` is used.
 - Invalid import values for `--matcher`, `--match-scope`, and `--on-duplicate` fail fast with explicit errors.
 - Use `--log debug` (or `SW_DEBUG=true`) to see per-record import matching decisions.

@@ -125,6 +125,8 @@ splitwise-cli expenses import expenses.yaml
 splitwise-cli expenses import expenses.json --dry-run
 splitwise-cli expenses import expenses.yaml --matcher intelligent --on-duplicate update
 splitwise-cli expenses import expenses.yaml --match-scope account
+splitwise-cli expenses import expenses.yaml --log-import
+splitwise-cli expenses import expenses.yaml --log-import import-run.jsonl
 splitwise-cli expenses import expenses.yaml --log debug --match-scope target
 ~~~
 
@@ -168,13 +170,14 @@ JSON format follows the same structure.
 | `--match-scope <scope>` | Duplicate scope: `target` (default) or `account` |
 | `--on-duplicate <action>` | Action when duplicate found: `skip` (default) or `update` |
 | `--limit <number>` | Process only the first N records from the file |
+| `--log-import [file]` | Append per-row JSONL events; defaults to `<import-file>.jsonl` when omitted |
 | `--no-cache` | Disable cache update after import |
 | `-o, --output <format>` | Output format |
 
 ### Matchers
 
-- **`exact`** — matches on description, cost, currency, date, and user distribution (all must be identical).
-- **`intelligent`** — fuzzy matching: date within ±5 days or a single adjacent-key digit typo per date component; cost with a single adjacent-key digit typo; currency must match exactly.
+- **`exact`** — matches on description, currency, date, and user distribution, with numeric-normalized cost equality (for example `50.10` equals `50.1`).
+- **`intelligent`** — fuzzy matching: date within ±5 days, or (for larger gaps) a single adjacent-key digit typo across full `YYYYMMDD`; cost with one adjacent-key digit typo and numeric-normalized equality; currency must match exactly.
 
 Keyboard adjacency includes both the top-row digit keys (horizontal neighbours) and standard numpad vertical neighbours (1↔4, 2↔5, 3↔6, 4↔7, 5↔8, 6↔9).
 
@@ -218,6 +221,13 @@ Debug traces for per-record match decisions are available with:
 
 ~~~bash
 splitwise-cli expenses import expenses.yaml --log debug --matcher intelligent --match-scope target
+~~~
+
+Per-row import event logs are available with:
+
+~~~bash
+splitwise-cli expenses import expenses.yaml --log-import
+splitwise-cli expenses import expenses.yaml --log-import import-run.jsonl
 ~~~
 
 Each created expense shows:
