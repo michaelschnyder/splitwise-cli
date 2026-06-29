@@ -160,17 +160,9 @@ describe('intelligent matcher digit adjacency edge cases', () => {
     // Day is wrong AND month is wrong = two separate typos
     const candidate = { description: 'Test', cost: '10.00', date: '2024-02-16' };
     const existing = makeExisting({ cost: '10.00', date: '2024-01-15' });
-    // Feb 16 vs Jan 15 is 32 days apart. Digit check per component:
-    // Month: "02" vs "01" — 1 char diff, adjacent. Day: "16" vs "15" — 1 char diff, adjacent.
-    // But our isDigitAdjacentTypo only allows 1 total difference per component,
-    // and dateFuzzyMatch checks per component independently, allowing both to mismatch.
-    // Actually the code checks per-segment independently but STILL treats the date as a whole match.
-    // Two single-component typos are currently accepted - let's check what the actual behavior is.
-    // The date 2024-02-16 vs 2024-01-15 is 32 days apart. Each component "02"/"01" and "16"/"15"
-    // both pass individually (single adjacent digit typo), so it WOULD match.
-    // This is the expected lenient behavior for intelligent matcher.
-    // Keep the test expectation correct: it SHOULD match (each component is independently a single typo).
-    assert.ok(intelligentMatch(candidate, existing, meId));
+    // Feb 16 vs Jan 15 is 32 days apart and differs in month and day.
+    // Intelligent matching should only tolerate one adjacent-digit typo across the full date.
+    assert.ok(!intelligentMatch(candidate, existing, meId));
   });
 
   it('does not match when a date component has 2 changed digits', () => {

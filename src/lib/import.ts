@@ -300,16 +300,11 @@ function dateFuzzyMatch(candidateDate: string | undefined, existingDate: string 
   const dayDiff = Math.abs((candDate.getTime() - exDate.getTime()) / (1000 * 60 * 60 * 24));
   if (dayDiff <= 5) return true;
 
-  // Check for digit-adjacent typos on date components
-  const candParts = candidateDay.split('-'); // YYYY-MM-DD
-  const exParts = existingDay.split('-');
-  if (candParts.length !== 3 || exParts.length !== 3) return false;
-
-  for (let i = 0; i < 3; i++) {
-    if (candParts[i] === exParts[i]) continue;
-    if (!isDigitAdjacentTypo(candParts[i], exParts[i])) return false;
-  }
-  return true;
+  // For larger gaps, only allow a single adjacent-digit typo across the full date.
+  // This prevents false positives like month+day drift being accepted together.
+  const candidateDigits = candidateDay.replace(/-/g, '');
+  const existingDigits = existingDay.replace(/-/g, '');
+  return isDigitAdjacentTypo(candidateDigits, existingDigits);
 }
 
 function normalizedMoney(value: string | number | undefined): string | undefined {
