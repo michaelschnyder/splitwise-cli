@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import prompts from 'prompts';
 import { dump as yamlDump } from 'js-yaml';
-import { type Expense } from 'splitwise';
+import { type Expense, type ExpenseCreateParams } from 'splitwise';
 import {
   getDataClient,
   ensureCreateExpenseAllowed,
@@ -35,6 +35,7 @@ import {
   buildExpenseUpdateParams,
   type ImportExpenseRecord,
   type ImportContext,
+  type MatchScope,
 } from '../lib/import.js';
 
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
@@ -1021,6 +1022,7 @@ export function registerExpenses(program: Command): void {
     .description('Import expenses from a YAML or JSON file')
     .option('--dry-run', 'Preview changes without writing')
     .option('--matcher <type>', 'Duplicate matching strategy: exact|intelligent', 'exact')
+    .option('--match-scope <scope>', 'Duplicate match scope: target|account', 'target')
     .option('--on-duplicate <action>', 'Action on duplicate: skip|update', 'skip')
     .option('--limit <number>', 'Limit to first N records')
     .option('--no-cache', 'Do not cache results')
@@ -1033,6 +1035,30 @@ export function registerExpenses(program: Command): void {
       if (tuiMode) writeTuiInfoSpacer(true);
 
       const progress = createTuiProgress(tuiMode);
+
+      const matcherName = String(opts.matcher ?? '').trim().toLowerCase();
+      const onDuplicate = String(opts.onDuplicate ?? '').trim().toLowerCase();
+      const matchScope = String(opts.matchScope ?? '').trim().toLowerCase() as MatchScope;
+
+      if (matcherName !== 'exact' && matcherName !== 'intelligent') {
+        logger.error(`Invalid --matcher value "${opts.matcher}". Expected one of: exact, intelligent.`);
+        process.exit(1);
+      }
+      if (onDuplicate !== 'skip' && onDuplicate !== 'update') {
+        logger.error(`Invalid --on-duplicate value "${opts.onDuplicate}". Expected one of: skip, update.`);
+        process.exit(1);
+      }
+      if (matchScope !== 'target' && matchScope !== 'account') {
+        logger.error(`Invalid --match-scope value "${opts.matchScope}". Expected one of: target, account.`);
+        process.exit(1);
+      }
+
+      logger.info(`Matcher: ${matcherName}`);
+      logger.info(`Match scope: ${matchScope}`);
+      logger.info(`On duplicate: ${onDuplicate}`);
+      logger.debug(
+        `Import options => dryRun=${opts.dryRun === true}, limit=${opts.limit ?? 'none'}, noCache=${opts.cache === false}`,
+      );
 
       // Parse import file
       let records: ImportExpenseRecord[];
@@ -1078,10 +1104,46 @@ export function registerExpenses(program: Command): void {
         process.exit(1);
       }
 
+      // Build import context
+      const context: ImportContext = {
+        groups: groups.map((g: any) => ({ id: g.id, name: g.name })),
+        friends: friends.map((f: any) => ({ id: f.id, firstName: f.firstName, lastName: f.lastName })),
+        meId: currentUser.id,
+        lookupMap: new Map(),
+      };
+
+      const matchesImportScope = (params: ExpenseCreateParams, existing: Expense): boolean => {
+        if (params.groupId !== undefined) {
+          return existing.groupId === params.groupId;
+        }
+
+        if (params.friendId !== undefined) {
+          if (existing.groupId !== null && existing.groupId !== undefined) return false;
+
+          const existingFriendId = Number((existing as any).friendId);
+          if (!Number.isNaN(existingFriendId)) {
+            return existingFriendId === params.friendId;
+          }
+
+          const participantIds = (existing.users ?? []).map((u) => u.userId);
+          if (participantIds.length === 0) return false;
+          return participantIds.includes(params.friendId) && participantIds.includes(context.meId);
+        }
+
+        return true;
+      };
+
+      const preparedRecords = records.map((record) => ({
+        record,
+        params: normalizeToCreateParams(record, context),
+      }));
+
+      const matcher = matcherName === 'intelligent' ? intelligentMatch : exactMatch;
+
       // Load existing expenses for duplicate detection
       try {
         progress.start('Fetching existing expenses...');
-        // Estimate date range from records
+
         const dates = records
           .map((r) => String(r.date ?? '').trim())
           .filter(Boolean)
@@ -1091,26 +1153,46 @@ export function registerExpenses(program: Command): void {
           .slice(0, 10);
         const datedBefore = dates[dates.length - 1] ?? new Date().toISOString().slice(0, 10);
 
-        const allExp = await sw.expenses.list({
-          datedAfter,
-          datedBefore,
-          limit: 1000,
-        });
-        allExpenses = allExp ?? [];
-        progress.stop(`Loaded ${allExpenses.length} existing expense(s)`, 'success');
+        const groupTargets = new Set(preparedRecords
+          .map(({ params }) => params?.groupId)
+          .filter((id): id is number => id !== undefined));
+        const friendTargets = new Set(preparedRecords
+          .map(({ params }) => params?.friendId)
+          .filter((id): id is number => id !== undefined));
+
+        const fetchParams: Record<string, unknown> = sw.getSourceKind() === 'cache'
+          ? { from: datedAfter, to: datedBefore }
+          : { datedAfter, datedBefore };
+
+        if (matchScope === 'target' && groupTargets.size === 1 && friendTargets.size === 0) {
+          fetchParams.groupId = [...groupTargets][0];
+        } else if (matchScope === 'target' && friendTargets.size === 1 && groupTargets.size === 0) {
+          fetchParams.friendId = [...friendTargets][0];
+        }
+
+        for await (const page of sw.expenses.list(fetchParams).byPage()) {
+          allExpenses.push(...page);
+        }
+
+        progress.stop('Fetched existing expenses in date window', 'success');
       } catch (err) {
         progress.fail('Failed to fetch existing expenses.');
         logger.error((err as Error).message);
         process.exit(1);
       }
 
-      // Build import context
-      const context: ImportContext = {
-        groups: groups.map((g: any) => ({ id: g.id, name: g.name })),
-        friends: friends.map((f: any) => ({ id: f.id, firstName: f.firstName, lastName: f.lastName })),
-        meId: currentUser.id,
-        lookupMap: new Map(),
-      };
+      logger.debug(
+        `Prepared ${preparedRecords.length} record(s); ${preparedRecords.filter((r) => r.params !== null).length} valid for matching`,
+      );
+
+      const scopedExistingCount = allExpenses.filter((expense) =>
+        matchScope === 'account'
+          ? true
+          : preparedRecords.some(({ params }) => params !== null && matchesImportScope(params, expense)),
+      ).length;
+
+      logger.info(`Loaded ${allExpenses.length} existing expense(s) in date window.`);
+      logger.info(`Found ${scopedExistingCount} existing expense(s) in import scope.`);
 
       // Process records
       const created: any[] = [];
@@ -1119,35 +1201,56 @@ export function registerExpenses(program: Command): void {
       const errors: any[] = [];
 
       progress.start('Processing records...');
-      for (const record of records) {
-        const params = normalizeToCreateParams(record, context);
+      for (let index = 0; index < preparedRecords.length; index++) {
+        const { record, params } = preparedRecords[index];
+        const label = String(record.description ?? `record#${index + 1}`);
+
         if (!params) {
+          logger.debug(`[${index + 1}/${preparedRecords.length}] ${label}: invalid input (missing description/cost)`);
           errors.push({ record, reason: 'Missing required fields (description, cost)' });
           continue;
         }
 
-        // Find duplicates
-        const matcher = opts.matcher === 'intelligent' ? intelligentMatch : exactMatch;
-        const duplicate = allExpenses.find((e) => matcher(params, e, context.meId));
+        logger.debug(
+          `[${index + 1}/${preparedRecords.length}] ${label}: evaluating duplicate using ${matcherName}/${matchScope}`,
+        );
+
+        const duplicate = allExpenses.find((e) => matcher(params, e, context.meId, matchScope));
 
         if (duplicate) {
-          if (opts.onDuplicate === 'update' && !opts.dryRun) {
+          logger.debug(
+            `[${index + 1}/${preparedRecords.length}] ${label}: duplicate matched expense #${duplicate.id}`,
+          );
+
+          if (onDuplicate === 'update' && !opts.dryRun) {
             const updateParams = buildExpenseUpdateParams(duplicate.id, params, duplicate);
             if (updateParams) {
               try {
                 const updatedExpense = await sw.expenses.update(updateParams);
                 updated.push({ record, expense: updatedExpense });
+                logger.debug(
+                  `[${index + 1}/${preparedRecords.length}] ${label}: updated duplicate expense #${updatedExpense.id}`,
+                );
                 // Replace the old entry in allExpenses so subsequent records see the updated version
                 const idx = allExpenses.indexOf(duplicate);
                 if (idx >= 0) allExpenses[idx] = updatedExpense;
               } catch (err) {
+                logger.debug(
+                  `[${index + 1}/${preparedRecords.length}] ${label}: update failed - ${(err as Error).message}`,
+                );
                 errors.push({ record, reason: (err as Error).message });
               }
             } else {
               // No actual changes to make
+              logger.debug(
+                `[${index + 1}/${preparedRecords.length}] ${label}: duplicate unchanged - skipping update`,
+              );
               skipped.push({ record, matched: duplicate });
             }
           } else {
+            logger.debug(
+              `[${index + 1}/${preparedRecords.length}] ${label}: duplicate action ${onDuplicate}${opts.dryRun ? ' (dry-run)' : ''} => skip`,
+            );
             skipped.push({ record, matched: duplicate });
           }
         } else {
@@ -1156,10 +1259,19 @@ export function registerExpenses(program: Command): void {
               const created_expense = await sw.expenses.create(params);
               created.push({ record, expense: created_expense });
               allExpenses.push(created_expense); // Track for subsequent records
+              logger.debug(
+                `[${index + 1}/${preparedRecords.length}] ${label}: created new expense #${created_expense.id}`,
+              );
             } catch (err) {
+              logger.debug(
+                `[${index + 1}/${preparedRecords.length}] ${label}: create failed - ${(err as Error).message}`,
+              );
               errors.push({ record, reason: (err as Error).message });
             }
           } else {
+            logger.debug(
+              `[${index + 1}/${preparedRecords.length}] ${label}: would create (dry-run)`,
+            );
             created.push({ record, expense: { id: -1 } as any }); // Mock for dry-run
           }
         }

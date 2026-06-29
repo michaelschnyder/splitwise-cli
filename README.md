@@ -159,13 +159,6 @@ splitwise-cli groups list
 splitwise-cli groups get <groupId>
 ```
 
-### Happy Path
-
-```bash
-splitwise-cli groups list
-splitwise-cli groups get <groupId>
-```
-
 ## Expenses
 
 ### Commands
@@ -192,15 +185,15 @@ splitwise-cli expenses import monthly.yaml
 
 | Flag | Short | Description |
 |---|---|---|
-| `--group <id|name>` | `-g` | filter by group ID or partial group name |
-| `--friend <id|name>` | `-u` | filter by friend ID or partial friend name |
+| `--group <id\|name>` | `-g` | filter by group ID or partial group name |
+| `--friend <id\|name>` | `-u` | filter by friend ID or partial friend name |
 | `--from <date>` | `-f` | include expenses on or after date |
 | `--to <date>` |  | include expenses on or before date |
 | `--max <n>` | `-m` | max rows unless `--all` is used |
 | `--all` |  | walk all API pages |
 | `--mine` |  | shorthand for `--payer @me` |
-| `--involved <@me|id|name>` |  | client-side participant filter |
-| `--payer <@me|id|name>` |  | client-side payer filter |
+| `--involved <@me\|id\|name>` |  | client-side participant filter |
+| `--payer <@me\|id\|name>` |  | client-side payer filter |
 | `--query <string>` |  | shorthand key:value query |
 | `--output <format>` | `-o` | `table`, `json`, or `yaml` |
 
@@ -214,11 +207,11 @@ Date values support ISO (`2026-01-01`) and relative values (`-10d`, `-2w`, `-1mo
 | `--cost <amount>` | `-a` | Total cost (required) |
 | `--date <date>` |  | Expense date (`YYYY-MM-DD` or relative) |
 | `--currency <code>` | `-C` | Currency code |
-| `--group <id|name>` | `-g` | Group ID or partial name |
-| `--friend <id|name>` | `-u` | Friend ID or partial name |
+| `--group <id\|name>` | `-g` | Group ID or partial name |
+| `--friend <id\|name>` | `-u` | Friend ID or partial name |
 | `--notes <text>` |  | Additional notes |
-| `--category <id|name>` |  | Category ID or partial name |
-| `--payer <@me|id|name>` |  | User who paid (default: `@me`) |
+| `--category <id\|name>` |  | Category ID or partial name |
+| `--payer <@me\|id\|name>` |  | User who paid (default: `@me`) |
 | `--split-equally` |  | Split equally (default) |
 | `--user-share <id:paid:owed>` |  | Custom share — repeat per participant |
 
@@ -234,7 +227,9 @@ Date values support ISO (`2026-01-01`) and relative values (`-10d`, `-2w`, `-1mo
 |---|---|
 | `--dry-run` | Preview changes without writing |
 | `--matcher <type>` | Duplicate detection: `exact` (default) or `intelligent` |
+| `--match-scope <scope>` | Duplicate scope: `target` (default) or `account` |
 | `--on-duplicate <action>` | Action on match: `skip` (default) or `update` |
+| `--limit <number>` | Process only the first N records |
 | `--no-cache` | Disable cache update after import |
 
 Import files are YAML or JSON lists. Two record shapes are supported:
@@ -266,6 +261,17 @@ Import files are YAML or JSON lists. Two record shapes are supported:
 
 Both shapes can be mixed in the same file. The `intelligent` matcher tolerates date differences of ±5 days, a single adjacent-key digit typo per date component or in the cost digits, with exact currency match required.
 
+Import matching behavior:
+
+- `--match-scope target` matches duplicates only within the resolved import target (same group/friend context).
+- `--match-scope account` matches duplicates across the whole account in the fetched date window.
+- Invalid values for `--matcher`, `--match-scope`, and `--on-duplicate` fail fast with an explicit error (no silent fallback to defaults).
+
+Debug tracing:
+
+- Use `--log debug` (or higher) to print per-record matching decisions and create/update/skip outcomes.
+- Use `SW_DEBUG=true` to force trace-level logs.
+
 ### Example Commands
 
 ```bash
@@ -278,6 +284,8 @@ splitwise-cli expenses add -d "Rent" -a 1200 -g Flatmates --user-share 123:1200:
 splitwise-cli expenses delete 99999 --yes
 splitwise-cli expenses import monthly.yaml --dry-run
 splitwise-cli expenses import monthly.yaml --matcher intelligent --on-duplicate update
+splitwise-cli expenses import monthly.yaml --match-scope account --matcher exact
+splitwise-cli expenses import monthly.yaml --log debug --matcher intelligent --match-scope target
 ```
 
 ### Example Response (`expenses list`)
@@ -367,16 +375,16 @@ splitwise-cli profiles edit work --limit-expenses-to-groups Flatmates,12345 --li
 
 | Flag | Description |
 |---|---|
-| `--create-expenses <yes|no>` | allow/disallow creating expenses |
-| `--update-expenses <yes|no>` | allow/disallow updating expenses |
-| `--delete-expenses <yes|no>` | allow/disallow deleting expenses |
+| `--create-expenses <yes\|no>` | allow/disallow creating expenses |
+| `--update-expenses <yes\|no>` | allow/disallow updating expenses |
+| `--delete-expenses <yes\|no>` | allow/disallow deleting expenses |
 | `--limit-expenses-to-groups <items>` | comma-separated ids/names, `none` for empty list, `null` for unrestricted |
 | `--limit-expenses-to-friends <items>` | comma-separated ids/names, `none` for empty list, `null` for unrestricted |
 | `--clear-expense-group-limit` | set expense group limit to unrestricted (`null`) |
 | `--clear-expense-friend-limit` | set expense friend limit to unrestricted (`null`) |
 | `--profile-credential <name>` | bind a profile to a credential |
 | `--clear-profile-credential` | remove profile credential binding |
-| `--offline-enabled <yes|no>` | enable cache-only mode by default for this profile |
+| `--offline-enabled <yes\|no>` | enable cache-only mode by default for this profile |
 | `--preferred-cache-target <target>` | preferred cache target: `local`, `user`, `global` |
 | `--clear-preferred-cache-target` | clear profile cache target preference |
 | `--api-endpoint <url>` | override the Splitwise API base URL |

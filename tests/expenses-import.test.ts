@@ -364,6 +364,45 @@ describe('exact matcher', () => {
     } as any;
     assert.ok(!exactMatch(withUsers, existing, meId));
   });
+
+  it('does not match expenses from another group', () => {
+    const withGroup = { ...candidate, groupId: 100 };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      groupId: 101,
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(!exactMatch(withGroup, existing, meId, 'target'));
+  });
+
+  it('matches expenses in the same group', () => {
+    const withGroup = { ...candidate, groupId: 100 };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      groupId: 100,
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(exactMatch(withGroup, existing, meId, 'target'));
+  });
+
+  it('can match across groups with account scope', () => {
+    const withGroup = { ...candidate, groupId: 100 };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      groupId: 101,
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(exactMatch(withGroup, existing, meId, 'account'));
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -471,6 +510,36 @@ describe('intelligent matcher', () => {
       createdBy: { id: meId },
     } as any;
     assert.ok(!intelligentMatch(withCurrency, existing, meId));
+  });
+
+  it('does not match friend-scoped candidate against group expense', () => {
+    const friendScoped = { ...candidate, friendId: 201 };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      groupId: 999,
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(!intelligentMatch(friendScoped, existing, meId, 'target'));
+  });
+
+  it('matches friend-scoped candidate when participants include me and friend', () => {
+    const friendScoped = { ...candidate, friendId: 201 };
+    const existing: Expense = {
+      id: 1,
+      description: 'Dinner',
+      cost: '30.00',
+      currencyCode: 'USD',
+      groupId: null,
+      users: [
+        { userId: meId, paidShare: '30', owedShare: '15' },
+        { userId: 201, paidShare: '0', owedShare: '15' },
+      ],
+      createdBy: { id: meId },
+    } as any;
+    assert.ok(intelligentMatch(friendScoped, existing, meId, 'target'));
   });
 });
 
@@ -734,6 +803,158 @@ describe('expenses import E2E', () => {
         costBefore,
         `Cost should not be updated during dry-run. Before: ${costBefore}, After: ${costAfter}`,
       );
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('fails fast on invalid matcher option', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+    writeFileSync(importFile, JSON.stringify([{ description: 'X', cost: '1.00' }]));
+
+    try {
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--matcher', 'fuzzyish',
+      ], ctx.tempDir, ctx.env);
+
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Invalid --matcher value/);
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('fails fast on invalid match-scope option', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+    writeFileSync(importFile, JSON.stringify([{ description: 'X', cost: '1.00' }]));
+
+    try {
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--match-scope', 'global',
+      ], ctx.tempDir, ctx.env);
+
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Invalid --match-scope value/);
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('prints matcher and scope and emits debug trace lines during import', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+    const content = JSON.stringify([
+      { description: 'Trace demo', cost: '5.00', date: '2024-01-15', currency: 'USD' },
+      { description: 'Trace demo', cost: '5.00', date: '2024-01-15', currency: 'USD' },
+    ]);
+    writeFileSync(importFile, content);
+
+    try {
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        '--log', 'debug',
+        'expenses', 'import', importFile,
+        '--matcher', 'exact',
+        '--match-scope', 'target',
+      ], ctx.tempDir, ctx.env);
+
+      assert.equal(result.status, 0);
+      assert.match(result.stderr, /Matcher: exact/);
+      assert.match(result.stderr, /Match scope: target/);
+      assert.match(result.stderr, /evaluating duplicate using exact\/target/);
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('match-scope=target allows create when duplicate exists in another group', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+
+    try {
+      const createElsewhere = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'add',
+        '-d', 'Scope collision',
+        '-a', '42.00',
+        '--date', '2024-01-15',
+        '-C', 'USD',
+        '--group', '999',
+      ], ctx.tempDir, ctx.env);
+      assert.equal(createElsewhere.status, 0);
+
+      writeFileSync(importFile, JSON.stringify([
+        {
+          description: 'Scope collision',
+          cost: '42.00',
+          date: '2024-01-15',
+          currency: 'USD',
+          group: 'January Trip',
+        },
+      ]));
+
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--match-scope', 'target',
+      ], ctx.tempDir, ctx.env);
+
+      assert.equal(result.status, 0);
+      assert.match(result.stderr, /Created: 1/);
+      assert.match(result.stderr, /Skipped: 0/);
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('match-scope=account skips create when duplicate exists in another group', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+
+    try {
+      const createElsewhere = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'add',
+        '-d', 'Scope collision',
+        '-a', '42.00',
+        '--date', '2024-01-15',
+        '-C', 'USD',
+        '--group', '999',
+      ], ctx.tempDir, ctx.env);
+      assert.equal(createElsewhere.status, 0);
+
+      writeFileSync(importFile, JSON.stringify([
+        {
+          description: 'Scope collision',
+          cost: '42.00',
+          date: '2024-01-15',
+          currency: 'USD',
+          group: 'January Trip',
+        },
+      ]));
+
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '--match-scope', 'account',
+      ], ctx.tempDir, ctx.env);
+
+      assert.equal(result.status, 0);
+      assert.match(result.stderr, /Created: 0/);
+      assert.match(result.stderr, /Skipped: 1/);
     } finally {
       await teardownE2EEnv(ctx);
     }

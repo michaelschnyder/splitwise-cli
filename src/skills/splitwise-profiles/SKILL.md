@@ -63,10 +63,10 @@ splitwise-cli profiles edit work --limit-expenses-to-friends null
 
 ## Supported Edit Flags
 
-- `--create-expenses <yes|no>`
-- `--update-expenses <yes|no>`
-- `--delete-expenses <yes|no>`
-- `--offline-enabled <yes|no>`
+- `--create-expenses <yes-or-no>`
+- `--update-expenses <yes-or-no>`
+- `--delete-expenses <yes-or-no>`
+- `--offline-enabled <yes-or-no>`
 - `--limit-expenses-to-groups <items>`
 - `--limit-expenses-to-friends <items>`
 - `--clear-expense-group-limit`

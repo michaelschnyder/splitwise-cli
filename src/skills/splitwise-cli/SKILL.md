@@ -122,6 +122,8 @@ splitwise-cli expenses add -d "Coffee" -a 4.50 --friend Alice
 splitwise-cli expenses import monthly.yaml --dry-run
 splitwise-cli expenses import monthly.yaml --matcher intelligent --on-duplicate skip
 splitwise-cli expenses import monthly.yaml --on-duplicate update
+splitwise-cli expenses import monthly.yaml --match-scope account
+splitwise-cli expenses import monthly.yaml --log debug --matcher intelligent --match-scope target
 ~~~
 
 ### Verify balances quickly
@@ -162,3 +164,6 @@ splitwise-cli skills --help
 - `cache add` and `cache refresh` create immutable snapshots that can be reused with `--offline`.
 - Write operations (`add`, `delete`, `import`) require profile permissions (`createExpenses`, `updateExpenses`, `deleteExpenses`).
 - `expenses import` supports both simplified (group/friend by name) and full (per-user splits) record shapes.
+- `expenses import --match-scope target|account` controls whether duplicate detection is target-scoped or account-wide.
+- Invalid import values for `--matcher`, `--match-scope`, and `--on-duplicate` fail fast with explicit errors.
+- Use `--log debug` (or `SW_DEBUG=true`) to see per-record import matching decisions.

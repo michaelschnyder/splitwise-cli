@@ -39,7 +39,7 @@ Balances are shown per currency. A friend with no balance is shown as settled up
 
 ~~~bash
 splitwise-cli friends list
-splitwise-cli expenses list --friend <id|name> --from -30d
+splitwise-cli expenses list --friend <id-or-name> --from -30d
 ~~~
 
 ## Output Notes

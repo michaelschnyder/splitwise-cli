@@ -17,6 +17,13 @@ type OfflinePagedResult<T> = {
   [Symbol.asyncIterator]: () => AsyncIterator<T>;
 };
 
+type OfflineExpenseListParams = OfflineExpenseRequest & {
+  limit?: number;
+  offset?: number;
+  datedAfter?: string;
+  datedBefore?: string;
+};
+
 function makePagedResult<T>(items: T[], userLimit?: number, offset = 0): OfflinePagedResult<T> {
   const requestedLimit = userLimit ?? items.length;
   const firstPage = items.slice(offset, offset + requestedLimit);
@@ -72,10 +79,12 @@ export function createOfflineSplitwiseClient(input: {
   const accountUserId = input.credential.userId;
   let pendingWarnings: string[] = [];
 
-  const requestScopeHint = (params?: OfflineExpenseRequest): string => {
+  const requestScopeHint = (params?: OfflineExpenseListParams): string => {
+    const from = params?.from ?? params?.datedAfter;
+    const to = params?.to ?? params?.datedBefore;
     const parts = [
-      params?.from ? `--from ${params.from}` : '',
-      params?.to ? `--to ${params.to}` : '',
+      from ? `--from ${from}` : '',
+      to ? `--to ${to}` : '',
       params?.groupId !== undefined ? `--group ${params.groupId}` : '',
       params?.friendId !== undefined ? `--friend ${params.friendId}` : '',
     ].filter(Boolean);
@@ -95,10 +104,12 @@ export function createOfflineSplitwiseClient(input: {
 
   const client = {
     expenses: {
-      list(params?: OfflineExpenseRequest & { limit?: number; offset?: number }) {
+      list(params?: OfflineExpenseListParams) {
+        const from = params?.from ?? params?.datedAfter;
+        const to = params?.to ?? params?.datedBefore;
         const result = resolveOfflineExpenses(input.target, accountUserId, {
-          from: params?.from,
-          to: params?.to,
+          from,
+          to,
           groupId: params?.groupId,
           friendId: params?.friendId,
         }, input.profileName);

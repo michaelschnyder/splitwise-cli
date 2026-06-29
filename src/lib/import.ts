@@ -12,6 +12,8 @@ export type ImportContext = {
   lookupMap: Map<string, number | undefined>;
 };
 
+export type MatchScope = 'target' | 'account';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // File parsing
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,12 +160,15 @@ export function exactMatch(
   candidate: ExpenseCreateParams,
   existing: Expense,
   meId: number,
+  matchScope: MatchScope = 'account',
 ): boolean {
   // Must have been created or updated by the current user
   if (!existing.createdBy && !existing.updatedBy) return false;
   const createdByMe = existing.createdBy?.id === meId;
   const updatedByMe = existing.updatedBy?.id === meId;
   if (!createdByMe && !updatedByMe) return false;
+
+  if (!scopeMatch(candidate, existing, meId, matchScope)) return false;
 
   // Exact match on core fields
   if (candidate.description !== existing.description) return false;
@@ -270,12 +275,15 @@ export function intelligentMatch(
   candidate: ExpenseCreateParams,
   existing: Expense,
   meId: number,
+  matchScope: MatchScope = 'account',
 ): boolean {
   // Must have been created or updated by the current user
   if (!existing.createdBy && !existing.updatedBy) return false;
   const createdByMe = existing.createdBy?.id === meId;
   const updatedByMe = existing.updatedBy?.id === meId;
   if (!createdByMe && !updatedByMe) return false;
+
+  if (!scopeMatch(candidate, existing, meId, matchScope)) return false;
 
   // Description must match exactly
   if (candidate.description !== existing.description) return false;
@@ -300,6 +308,35 @@ export function intelligentMatch(
       .map((u) => `${u.userId}:${u.paidShare ?? '0'}:${u.owedShare ?? '0'}`)
       .join('|');
     if (candidateSorted !== existingSorted) return false;
+  }
+
+  return true;
+}
+
+function scopeMatch(
+  candidate: ExpenseCreateParams,
+  existing: Expense,
+  meId: number,
+  matchScope: MatchScope,
+): boolean {
+  if (matchScope === 'account') return true;
+
+  if (candidate.groupId !== undefined) {
+    return existing.groupId === candidate.groupId;
+  }
+
+  if (candidate.friendId !== undefined) {
+    // Friend expenses are expected to be non-group expenses.
+    if (existing.groupId !== null && existing.groupId !== undefined) return false;
+
+    const existingFriendId = Number((existing as any).friendId);
+    if (!Number.isNaN(existingFriendId)) {
+      return existingFriendId === candidate.friendId;
+    }
+
+    const participantIds = (existing.users ?? []).map((u) => u.userId);
+    if (participantIds.length === 0) return false;
+    return participantIds.includes(candidate.friendId) && participantIds.includes(meId);
   }
 
   return true;

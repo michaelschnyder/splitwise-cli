@@ -47,8 +47,8 @@ splitwise-cli expenses list --query "group:Flatmates from:-7d"
 
 | Option | Purpose |
 |---|---|
-| `--group <id|name>` | Server-side group filter (name resolved locally) |
-| `--friend <id|name>` | Server-side friend filter (name resolved locally) |
+| `--group <id\|name>` | Server-side group filter (name resolved locally) |
+| `--friend <id\|name>` | Server-side friend filter (name resolved locally) |
 | `--from`, `--to` | Server-side date filter |
 | `--max <n>` | Limit result size when not using `--all` |
 | `--all` | Fetch every page |
@@ -79,11 +79,11 @@ splitwise-cli expenses add -d "Coffee" -a 4.50 --friend Alice --user-share 123:2
 | `-a, --cost <amount>` | Total cost (required) |
 | `--date <date>` | Expense date (`YYYY-MM-DD` or relative) |
 | `-C, --currency <code>` | Currency code (default: account default) |
-| `-g, --group <id|name>` | Group ID or partial name |
-| `-u, --friend <id|name>` | Friend ID or partial name |
+| `-g, --group <id\|name>` | Group ID or partial name |
+| `-u, --friend <id\|name>` | Friend ID or partial name |
 | `--notes <text>` | Additional notes/details |
-| `--category <id|name>` | Category ID or partial name |
-| `--payer <@me|id|name>` | User who paid (default: `@me`) |
+| `--category <id\|name>` | Category ID or partial name |
+| `--payer <@me\|id\|name>` | User who paid (default: `@me`) |
 | `--split-equally` | Split equally among payer and group/friend (default) |
 | `--user-share <id:paid:owed>` | Custom share — repeat for each participant |
 
@@ -124,6 +124,8 @@ Bulk-create (and optionally update) expenses from a YAML or JSON file.
 splitwise-cli expenses import expenses.yaml
 splitwise-cli expenses import expenses.json --dry-run
 splitwise-cli expenses import expenses.yaml --matcher intelligent --on-duplicate update
+splitwise-cli expenses import expenses.yaml --match-scope account
+splitwise-cli expenses import expenses.yaml --log debug --match-scope target
 ~~~
 
 ### Import File Formats
@@ -163,6 +165,7 @@ JSON format follows the same structure.
 |---|---|
 | `--dry-run` | Preview changes without writing anything |
 | `--matcher <type>` | Duplicate detection: `exact` (default) or `intelligent` |
+| `--match-scope <scope>` | Duplicate scope: `target` (default) or `account` |
 | `--on-duplicate <action>` | Action when duplicate found: `skip` (default) or `update` |
 | `--limit <number>` | Process only the first N records from the file |
 | `--no-cache` | Disable cache update after import |
@@ -180,6 +183,9 @@ Keyboard adjacency includes both the top-row digit keys (horizontal neighbours) 
 - `--on-duplicate=skip` (default): matched expenses are reported but not modified.
 - `--on-duplicate=update`: only fields that differ from the match are sent; no API call is made when nothing has changed.
 - `--dry-run` blocks both creates and updates regardless of other flags.
+- `--match-scope=target` (default): duplicates are matched only within the import target.
+- `--match-scope=account`: duplicates are matched across the full account in the imported date window.
+- Invalid values for `--matcher`, `--match-scope`, or `--on-duplicate` fail fast with an explicit error.
 
 ### Import Summary Output
 
@@ -192,7 +198,12 @@ i [expenses import] Parsing import file...
 i [expenses import] Fetching reference data...
 ✔ [expenses import] Reference data loaded
 i [expenses import] Fetching existing expenses...
-✔ [expenses import] Loaded 2 existing expense(s)
+✔ [expenses import] Fetched existing expenses in date window
+i [expenses import] Matcher: exact
+i [expenses import] Match scope: target
+i [expenses import] On duplicate: skip
+i [expenses import] Loaded 2 existing expense(s) in date window.
+i [expenses import] Found 1 existing expense(s) in import scope.
 i [expenses import] Processing records...
 ✔ [expenses import] Done
 
@@ -201,6 +212,12 @@ i [expenses import]   Created: 2
 i [expenses import]   Updated: 0
 i [expenses import]   Skipped: 1
 i [expenses import]   Errors:  0
+~~~
+
+Debug traces for per-record match decisions are available with:
+
+~~~bash
+splitwise-cli expenses import expenses.yaml --log debug --matcher intelligent --match-scope target
 ~~~
 
 Each created expense shows:
