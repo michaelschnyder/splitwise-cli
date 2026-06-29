@@ -2,7 +2,7 @@
 name: splitwise-cache
 description: Export, refresh, inspect, and delete Splitwise cache snapshots for offline use.
 metadata:
-  version: "1.2.2"
+  version: "1.2.3"
   author: splitwise-cli
   tags: splitwise,cache,offline,exports,refresh
   alwaysApply: "false"
