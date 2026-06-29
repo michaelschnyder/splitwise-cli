@@ -1028,6 +1028,7 @@ export function registerExpenses(program: Command): void {
     .option('--no-cache', 'Do not cache results')
     .option('-o, --output <format>', 'Output format')
     .action(async function (this: Command, file: string, opts: any) {
+      const fmt: OutputFormat = getFormat(this);
       const logger = createLogger(this, 'expenses import');
       const tuiMode = isTuiDefault(this);
       ensureCreateExpenseAllowed(this);
@@ -1053,9 +1054,9 @@ export function registerExpenses(program: Command): void {
         process.exit(1);
       }
 
-      logger.info(`Matcher: ${matcherName}`);
-      logger.info(`Match scope: ${matchScope}`);
-      logger.info(`On duplicate: ${onDuplicate}`);
+      logger.debug(`Matcher: ${matcherName}`);
+      logger.debug(`Match scope: ${matchScope}`);
+      logger.debug(`On duplicate: ${onDuplicate}`);
       logger.debug(
         `Import options => dryRun=${opts.dryRun === true}, limit=${opts.limit ?? 'none'}, noCache=${opts.cache === false}`,
       );
@@ -1191,15 +1192,19 @@ export function registerExpenses(program: Command): void {
           : preparedRecords.some(({ params }) => params !== null && matchesImportScope(params, expense)),
       ).length;
 
-      logger.info(`Loaded ${allExpenses.length} existing expense(s) in date window.`);
-      logger.info(`Found ${scopedExistingCount} existing expense(s) in import scope.`);
+      logger.debug(`Loaded ${allExpenses.length} existing expense(s) in date window.`);
+      logger.debug(`Found ${scopedExistingCount} existing expense(s) in import scope.`);
+
+      let createdCount = 0;
+      let updatedCount = 0;
+      let skippedCount = 0;
+      let errorCount = 0;
+
+      const emitImportItem = (item: Record<string, unknown>) => {
+        render([item], fmt);
+      };
 
       // Process records
-      const created: any[] = [];
-      const skipped: any[] = [];
-      const updated: any[] = [];
-      const errors: any[] = [];
-
       progress.start('Processing records...');
       for (let index = 0; index < preparedRecords.length; index++) {
         const { record, params } = preparedRecords[index];
@@ -1207,7 +1212,14 @@ export function registerExpenses(program: Command): void {
 
         if (!params) {
           logger.debug(`[${index + 1}/${preparedRecords.length}] ${label}: invalid input (missing description/cost)`);
-          errors.push({ record, reason: 'Missing required fields (description, cost)' });
+          const reason = 'Missing required fields (description, cost)';
+          errorCount++;
+          emitImportItem({
+            index: index + 1,
+            description: label,
+            status: 'error',
+            reason,
+          });
           continue;
         }
 
@@ -1227,7 +1239,14 @@ export function registerExpenses(program: Command): void {
             if (updateParams) {
               try {
                 const updatedExpense = await sw.expenses.update(updateParams);
-                updated.push({ record, expense: updatedExpense });
+                updatedCount++;
+                emitImportItem({
+                  index: index + 1,
+                  description: label,
+                  status: 'updated',
+                  expenseId: Number(updatedExpense.id),
+                  duplicateId: Number(duplicate.id),
+                });
                 logger.debug(
                   `[${index + 1}/${preparedRecords.length}] ${label}: updated duplicate expense #${updatedExpense.id}`,
                 );
@@ -1238,26 +1257,51 @@ export function registerExpenses(program: Command): void {
                 logger.debug(
                   `[${index + 1}/${preparedRecords.length}] ${label}: update failed - ${(err as Error).message}`,
                 );
-                errors.push({ record, reason: (err as Error).message });
+                errorCount++;
+                emitImportItem({
+                  index: index + 1,
+                  description: label,
+                  status: 'error',
+                  reason: (err as Error).message,
+                  duplicateId: Number(duplicate.id),
+                });
               }
             } else {
               // No actual changes to make
               logger.debug(
                 `[${index + 1}/${preparedRecords.length}] ${label}: duplicate unchanged - skipping update`,
               );
-              skipped.push({ record, matched: duplicate });
+              skippedCount++;
+              emitImportItem({
+                index: index + 1,
+                description: label,
+                status: 'skipped',
+                duplicateId: Number(duplicate.id),
+              });
             }
           } else {
             logger.debug(
               `[${index + 1}/${preparedRecords.length}] ${label}: duplicate action ${onDuplicate}${opts.dryRun ? ' (dry-run)' : ''} => skip`,
             );
-            skipped.push({ record, matched: duplicate });
+            skippedCount++;
+            emitImportItem({
+              index: index + 1,
+              description: label,
+              status: 'skipped',
+              duplicateId: Number(duplicate.id),
+            });
           }
         } else {
           if (!opts.dryRun) {
             try {
               const created_expense = await sw.expenses.create(params);
-              created.push({ record, expense: created_expense });
+              createdCount++;
+              emitImportItem({
+                index: index + 1,
+                description: label,
+                status: 'created',
+                expenseId: Number(created_expense.id),
+              });
               allExpenses.push(created_expense); // Track for subsequent records
               logger.debug(
                 `[${index + 1}/${preparedRecords.length}] ${label}: created new expense #${created_expense.id}`,
@@ -1266,36 +1310,43 @@ export function registerExpenses(program: Command): void {
               logger.debug(
                 `[${index + 1}/${preparedRecords.length}] ${label}: create failed - ${(err as Error).message}`,
               );
-              errors.push({ record, reason: (err as Error).message });
+              errorCount++;
+              emitImportItem({
+                index: index + 1,
+                description: label,
+                status: 'error',
+                reason: (err as Error).message,
+              });
             }
           } else {
             logger.debug(
               `[${index + 1}/${preparedRecords.length}] ${label}: would create (dry-run)`,
             );
-            created.push({ record, expense: { id: -1 } as any }); // Mock for dry-run
+            createdCount++;
+            emitImportItem({
+              index: index + 1,
+              description: label,
+              status: 'dry-run-create',
+            });
           }
         }
       }
 
       progress.stop('Done', 'success');
 
-      // Output summary
-      if (tuiMode) writeTuiInfoSpacer(true);
-      logger.info(`Import Summary:`);
-      logger.info(`  Created: ${created.length}`);
-      logger.info(`  Updated: ${updated.length}`);
-      logger.info(`  Skipped: ${skipped.length}`);
-      logger.info(`  Errors:  ${errors.length}`);
+      renderOne({
+        matcher: matcherName,
+        matchScope,
+        onDuplicate,
+        dryRun: opts.dryRun === true,
+        created: createdCount,
+        updated: updatedCount,
+        skipped: skippedCount,
+        errors: errorCount,
+      }, fmt, { tuiMode });
 
       if (opts.dryRun) {
         logger.warn('(Dry-run mode: no changes written)');
-      }
-
-      if (errors.length > 0) {
-        logger.error(`\nErrors:`);
-        for (const { record, reason } of errors) {
-          logger.error(`  ${record.description}: ${reason}`);
-        }
       }
     });
 

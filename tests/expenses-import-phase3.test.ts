@@ -404,7 +404,7 @@ describe('expenses import --on-duplicate=update E2E', () => {
         'expenses', 'import', importFile,
       ], ctx.tempDir, ctx.env);
 
-      assert.match(createResult.stderr, /Created: 1/, 'First import should create 1 expense');
+      assert.match(createResult.stdout, /created\s+1/i, 'First import should create 1 expense');
 
       // Second import: same description/date but different cost → should update
       const updateContent = JSON.stringify([
@@ -429,8 +429,9 @@ describe('expenses import --on-duplicate=update E2E', () => {
         '--matcher', 'intelligent',
       ], ctx.tempDir, ctx.env);
 
-      assert.match(updateResult.stderr, /Updated: 1/, 'Second import should update 1 expense');
-      assert.match(updateResult.stderr, /Created: 0/, 'Should not create any new expenses');
+      assert.match(updateResult.stdout, /updated\s+1/i, 'Second import should update 1 expense');
+      assert.match(updateResult.stdout, /created\s+0/i, 'Should not create any new expenses');
+      assert.match(updateResult.stdout, /Team lunch/, 'Should include updated expense item');
     } finally {
       await teardownE2EEnv(ctx);
     }
@@ -470,8 +471,9 @@ describe('expenses import --on-duplicate=update E2E', () => {
         '--on-duplicate', 'skip',
       ], ctx.tempDir, ctx.env);
 
-      assert.match(result.stderr, /Created: 1/);
-      assert.match(result.stderr, /Skipped: 1/);
+      assert.match(result.stdout, /created\s+1/i);
+      assert.match(result.stdout, /skipped\s+1/i);
+      assert.match(result.stdout, /Coffee/);
     } finally {
       await teardownE2EEnv(ctx);
     }

@@ -222,6 +222,46 @@ describe('import normalization', () => {
     assert.equal(params.groupId, 101);
   });
 
+  it('resolves group on full-shape records', () => {
+    const context: ImportContext = {
+      groups: [
+        { id: 99530723, name: 'SK Test' },
+      ],
+      friends: [],
+      meId: 999,
+      lookupMap: new Map(),
+    };
+
+    const byName: ImportExpenseRecord = {
+      description: 'Korean online booking',
+      cost: '212.63',
+      group: 'SK Test',
+      splits: [
+        { userId: 999, paidShare: '212.63', owedShare: '53.16' },
+        { userId: 123, paidShare: '0.00', owedShare: '53.16' },
+      ],
+    };
+    const byId: ImportExpenseRecord = {
+      description: 'Tada - Rebekka+Me',
+      cost: '39.07',
+      group: 99530723,
+      splits: [
+        { userId: 999, paidShare: '39.07', owedShare: '19.54' },
+        { userId: 123, paidShare: '0.00', owedShare: '19.54' },
+      ],
+    };
+
+    const paramsByName = normalizeToCreateParams(byName, context);
+    const paramsById = normalizeToCreateParams(byId, context);
+
+    assert.ok(paramsByName);
+    assert.ok(paramsById);
+    assert.equal(paramsByName.groupId, 99530723);
+    assert.equal(paramsById.groupId, 99530723);
+    assert.equal(paramsByName.users?.length, 2);
+    assert.equal(paramsById.users?.length, 2);
+  });
+
   it('returns null for missing required fields', () => {
     const context: ImportContext = {
       groups: [],
@@ -251,6 +291,23 @@ describe('import normalization', () => {
     assert.ok(params);
     assert.equal(params.details, 'With Jane');
     assert.equal(params.categoryId, 18);
+  });
+
+  it('does not set categoryId for non-numeric category labels', () => {
+    const context: ImportContext = {
+      groups: [],
+      friends: [],
+      meId: 999,
+      lookupMap: new Map(),
+    };
+    const record: ImportExpenseRecord = {
+      description: 'Taxi ride',
+      cost: '12.40',
+      category: 'Taxi',
+    };
+    const params = normalizeToCreateParams(record, context);
+    assert.ok(params);
+    assert.equal(params.categoryId, undefined);
   });
 });
 
@@ -614,8 +671,9 @@ describe('expenses import E2E', () => {
         'expenses', 'import', importFile,
       ], ctx.tempDir, ctx.env);
 
-      assert.match(result.stderr, /Created: 1/);
-      assert.match(result.stderr, /Skipped: 0/);
+      assert.match(result.stdout, /New dinner/);
+      assert.match(result.stdout, /created\s+1/i);
+      assert.match(result.stdout, /skipped\s+0/i);
     } finally {
       await teardownE2EEnv(ctx);
     }
@@ -655,8 +713,9 @@ describe('expenses import E2E', () => {
         'expenses', 'import', importFile,
       ], ctx.tempDir, ctx.env);
 
-      assert.match(result.stderr, /Created: 1/);
-      assert.match(result.stderr, /Skipped: 1/);
+      assert.match(result.stdout, /Duplicate dinner/);
+      assert.match(result.stdout, /created\s+1/i);
+      assert.match(result.stdout, /skipped\s+1/i);
     } finally {
       await teardownE2EEnv(ctx);
     }
@@ -703,7 +762,7 @@ describe('expenses import E2E', () => {
 
       // Verify dry-run warning message
       assert.match(dryRunResult.stderr, /Dry-run mode: no changes written/);
-      assert.match(dryRunResult.stderr, /Created: 2/);
+      assert.match(dryRunResult.stdout, /created\s+2/i);
 
       // Count expenses after dry-run
       const afterResult = await runCli([
@@ -786,7 +845,7 @@ describe('expenses import E2E', () => {
       // Verify the command succeeded and showed dry-run warning
       assert.match(dryRunUpdateResult.stderr, /Dry-run mode: no changes written/);
       // In dry-run with duplicate matched, it should be skipped (not updated)
-      assert.match(dryRunUpdateResult.stderr, /Updated: 0/);
+      assert.match(dryRunUpdateResult.stdout, /updated\s+0/i);
 
       // Get expense details after dry-run
       const afterUpdateResult = await runCli([
@@ -911,8 +970,8 @@ describe('expenses import E2E', () => {
       ], ctx.tempDir, ctx.env);
 
       assert.equal(result.status, 0);
-      assert.match(result.stderr, /Created: 1/);
-      assert.match(result.stderr, /Skipped: 0/);
+      assert.match(result.stdout, /created\s+1/i);
+      assert.match(result.stdout, /skipped\s+0/i);
     } finally {
       await teardownE2EEnv(ctx);
     }
@@ -953,8 +1012,40 @@ describe('expenses import E2E', () => {
       ], ctx.tempDir, ctx.env);
 
       assert.equal(result.status, 0);
-      assert.match(result.stderr, /Created: 0/);
-      assert.match(result.stderr, /Skipped: 1/);
+      assert.match(result.stdout, /created\s+0/i);
+      assert.match(result.stdout, /skipped\s+1/i);
+    } finally {
+      await teardownE2EEnv(ctx);
+    }
+  });
+
+  it('adheres to structured output format when -o json is requested', async () => {
+    const ctx = await setupE2EEnv();
+    const importFile = join(ctx.tempDir, 'expenses.json');
+    writeFileSync(importFile, JSON.stringify([
+      {
+        description: 'JSON output demo',
+        cost: '8.50',
+        date: '2024-01-15',
+        currency: 'USD',
+      },
+    ]));
+
+    try {
+      const result = await runCli([
+        '--config-dir', ctx.configDir,
+        '--profile', ctx.profileName,
+        'expenses', 'import', importFile,
+        '-o', 'json',
+      ], ctx.tempDir, ctx.env);
+
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, /"status":\s*"created"/);
+      assert.match(result.stdout, /"description":\s*"JSON output demo"/);
+      assert.match(result.stdout, /"created":\s*1/);
+      assert.match(result.stdout, /"updated":\s*0/);
+      assert.match(result.stdout, /"skipped":\s*0/);
+      assert.match(result.stdout, /"errors":\s*0/);
     } finally {
       await teardownE2EEnv(ctx);
     }

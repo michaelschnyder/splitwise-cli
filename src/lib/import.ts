@@ -100,23 +100,24 @@ export function normalizeToCreateParams(
   if (record.currencyCode !== undefined) params.currencyCode = String(record.currencyCode);
   if (record.notes !== undefined) params.details = String(record.notes);
   if (record.details !== undefined) params.details = String(record.details);
-  if (record.category !== undefined) params.categoryId = Number(record.category);
-  if (record.categoryId !== undefined) params.categoryId = Number(record.categoryId);
+  const categoryId = resolveNumericId(record.categoryId ?? record.category_id ?? record.category);
+  if (categoryId !== undefined) params.categoryId = categoryId;
   if (record.payment !== undefined) params.payment = Boolean(record.payment);
 
-  // Resolve group/friend
-  if (shape === 'simplified') {
-    if (record.group !== undefined) {
-      const groupKey = `group:${String(record.group).toLowerCase()}`;
-      const groupId = context.lookupMap.get(groupKey);
-      if (groupId !== undefined) params.groupId = groupId;
-    }
-    if (record.friend !== undefined) {
-      const friendKey = `friend:${String(record.friend).toLowerCase()}`;
-      const friendId = context.lookupMap.get(friendKey);
-      if (friendId !== undefined) params.friendId = friendId;
-    }
-  }
+  // Resolve group/friend for both simplified and full shapes.
+  const resolvedGroupId = resolveLookupId(
+    record.groupId ?? record.group_id ?? record.group,
+    'group',
+    context.lookupMap,
+  );
+  if (resolvedGroupId !== undefined) params.groupId = resolvedGroupId;
+
+  const resolvedFriendId = resolveLookupId(
+    record.friendId ?? record.friend_id ?? record.friend,
+    'friend',
+    context.lookupMap,
+  );
+  if (resolvedFriendId !== undefined) params.friendId = resolvedFriendId;
 
   // Resolve users/splits from full shape
   if (shape === 'full' && Array.isArray(record.splits)) {
@@ -132,6 +133,26 @@ export function normalizeToCreateParams(
   }
 
   return params;
+}
+
+function resolveNumericId(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const parsed = Number(String(value).trim());
+  if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
+function resolveLookupId(
+  value: unknown,
+  prefix: 'group' | 'friend',
+  lookupMap: Map<string, number | undefined>,
+): number | undefined {
+  const asId = resolveNumericId(value);
+  if (asId !== undefined) return asId;
+
+  if (value === undefined || value === null) return undefined;
+  const key = `${prefix}:${String(value).trim().toLowerCase()}`;
+  return lookupMap.get(key);
 }
 
 function buildLookupMap(context: ImportContext): void {
