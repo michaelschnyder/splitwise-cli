@@ -51,7 +51,7 @@
     "js-yaml": "^5.2.1",
     "prompts": "^2.4.2",
     "splitwise": "^2.0.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "commander": "^15.0.0"
